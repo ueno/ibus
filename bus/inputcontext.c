@@ -171,6 +171,9 @@ bus_input_context_new (BusConnection    *connection,
     context->connection = connection;
     context->client = g_strdup (client);
 
+    /* it is a fake input context, just need process hotkey */
+    context->fake = (g_strcmp0 (client, "fake") == 0);
+
     g_signal_connect (context->connection,
                       "destroy",
                       (GCallback) _connection_destroy_cb,
@@ -686,7 +689,12 @@ _ic_process_key_event  (BusInputContext *context,
 
     if (G_UNLIKELY (!context->has_focus)) {
         /* workaround: set focus if context does not have focus */
-        bus_input_context_focus_in (context);
+        if (BUS_DEFAULT_IBUS->focused_context == NULL ||
+            BUS_DEFAULT_IBUS->focused_context->fake == TRUE ||
+            context->fake == FALSE) {
+            /* grab focus, if context is a real IC or current focused IC is fake */
+            bus_input_context_focus_in (context);
+        }
     }
 
     if (G_LIKELY (context->has_focus)) {
@@ -701,7 +709,8 @@ _ic_process_key_event  (BusInputContext *context,
         }
     }
 
-    if (context->has_focus && context->enabled && context->engine) {
+    /* ignore key events, if it is a fake input context */
+    if (context->has_focus && context->enabled && context->engine && context->fake == FALSE) {
         CallData *call_data;
 
         call_data = g_slice_new (CallData);
@@ -1162,6 +1171,11 @@ bus_input_context_focus_in (BusInputContext *context)
         return;
 
     context->has_focus = TRUE;
+
+    // To make sure that we won't use an old value left before we losing focus
+    // last time.
+    context->prev_keyval = IBUS_VoidSymbol;
+    context->prev_modifiers = 0;
 
     if (context->engine == NULL && context->enabled) {
         g_signal_emit (context, context_signals[REQUEST_ENGINE], 0, NULL);
