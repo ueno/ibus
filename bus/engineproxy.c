@@ -1,3 +1,4 @@
+/* -*- mode: C; c-basic-offset: 4; indent-tabs-mode: nil; -*- */
 /* vim:set et sts=4: */
 /* ibus - The Input Bus
  * Copyright (C) 2008-2010 Peng Huang <shawn.p.huang@gmail.com>
@@ -564,7 +565,9 @@ bus_engine_proxy_process_key_event_reply_cb (IBusPendingCall *pending,
             /* reply timeout */
             IBusObject *connection;
             connection = (IBusObject *) ibus_proxy_get_connection ((IBusProxy *)call_data->engine);
-            ibus_object_destroy (connection);
+            if (connection) {
+                ibus_object_destroy (connection);
+            }
         }
         g_warning ("%s: %s", error->name, error->message);
         ibus_error_free (error);

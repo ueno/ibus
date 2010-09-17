@@ -1,3 +1,4 @@
+/* -*- mode: C; c-basic-offset: 4; indent-tabs-mode: nil; -*- */
 /* vim:set et sts=4: */
 /* ibus - The Input Bus
  * Copyright (C) 2008-2010 Peng Huang <shawn.p.huang@gmail.com>
@@ -774,6 +775,10 @@ _process_key_event_reply_cb (IBusPendingCall *pending,
                        call_data->keyval,
                        call_data->keycode,
                        call_data->state | IBUS_FORWARD_MASK);
+    }
+
+    if (reply_message != NULL) {
+        dbus_message_unref (reply_message);
     }
 }
 

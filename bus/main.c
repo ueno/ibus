@@ -1,3 +1,4 @@
+/* -*- mode: C; c-basic-offset: 4; indent-tabs-mode: nil; -*- */
 /* vim:set et sts=4: */
 /* ibus - The Input Bus
  * Copyright (C) 2008-2010 Peng Huang <shawn.p.huang@gmail.com>
@@ -155,17 +156,6 @@ daemon (gint nochdir, gint noclose)
 #endif
 
 static void
-_my_log_handler (const gchar    *log_domain,
-                 GLogLevelFlags  log_level,
-                 const gchar    *message,
-                 gpointer        user_data)
-{
-    if (g_verbose) {
-        g_log_default_handler (log_domain, log_level, message, user_data);
-    }
-}
-
-static void
 _sig_usr2_handler (int sig)
 {
     g_mem_profile ();
@@ -225,10 +215,7 @@ main (gint argc, gchar **argv)
 #ifdef G_THREADS_ENABLED
     g_thread_init (NULL);
 #endif
-    g_log_set_handler (G_LOG_DOMAIN,
-        G_LOG_LEVEL_WARNING | G_LOG_LEVEL_DEBUG | G_LOG_FLAG_FATAL | G_LOG_FLAG_RECURSION,
-        _my_log_handler,
-        NULL);
+    ibus_set_log_handler(g_verbose);
 
     /* check if ibus-daemon is running in this session */
     if (ibus_get_address () != NULL) {

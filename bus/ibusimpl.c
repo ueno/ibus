@@ -1,3 +1,4 @@
+/* -*- mode: C; c-basic-offset: 4; indent-tabs-mode: nil; -*- */
 /* vim:set et sts=4: */
 /* ibus - The Input Bus
  * Copyright (C) 2008-2010 Peng Huang <shawn.p.huang@gmail.com>
@@ -610,6 +611,7 @@ bus_ibus_impl_init (BusIBusImpl *ibus)
 #ifdef G_THREADS_ENABLED
     extern gint g_monitor_timeout;
     if (g_monitor_timeout != 0) {
+        /* Start the monitor of registry changes. */
         bus_registry_start_monitor_changes (ibus->registry);
     }
 #endif

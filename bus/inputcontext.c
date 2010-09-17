@@ -1,3 +1,4 @@
+/* -*- mode: C; c-basic-offset: 4; indent-tabs-mode: nil; -*- */
 /* vim:set et sts=4: */
 /* ibus - The Input Bus
  * Copyright (C) 2008-2010 Peng Huang <shawn.p.huang@gmail.com>
@@ -935,6 +936,18 @@ _ic_property_activate (BusInputContext  *context,
     if (context->enabled && context->engine) {
         bus_engine_proxy_property_activate (context->engine, prop_name, prop_state);
     }
+#ifdef OS_CHROMEOS
+    /* Global engine is always enabled in chromeos,
+     * so pass PropertyActivate signal to the focused context.
+     */
+    else {
+        if (context->fake &&
+            BUS_DEFAULT_IBUS->focused_context &&
+            BUS_DEFAULT_IBUS->focused_context->engine) {
+            bus_engine_proxy_property_activate (BUS_DEFAULT_IBUS->focused_context->engine, prop_name, prop_state);
+        }
+    }
+#endif
 
     reply = ibus_message_new_method_return (message);
     return reply;
