@@ -1,8 +1,8 @@
-/* -*- mode: C; c-basic-offset: 4; indent-tabs-mode: nil; -*- */
 /* vim:set et sts=4: */
 /* ibus - The Input Bus
  * Copyright (C) 2008-2010 Peng Huang <shawn.p.huang@gmail.com>
  * Copyright (C) 2008-2010 Red Hat, Inc.
+ * Copyright (c) 2010 Google, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -19,28 +19,12 @@
  * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
  * Boston, MA 02111-1307, USA.
  */
-/**
- * SECTION: ibusdbus
- * @Title: IBusDBus
- * @Short_description: DBus types
- * @Stability: Stable
- *
- */
-#ifndef __IBUS_DBUS_H_
-#define __IBUS_DBUS_H_
+#ifndef __BUS_TYPES_H_
+#define __BUS_TYPES_H_
 
-G_BEGIN_DECLS
+#include <glib.h>
 
-#ifndef DBUS_H
-typedef struct DBusError DBusError;
-typedef struct DBusMessage DBusMessage;
-typedef struct DBusMessageIter DBusMessageIter;
-typedef struct DBusPendingCall DBusPendingCall;
-typedef struct DBusServer DBusServer;
-typedef struct DBusConnection DBusConnection;
-#else
-#endif
-
-G_END_DECLS
+#define I_(string) g_intern_static_string (string)
 
 #endif
+

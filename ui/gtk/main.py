@@ -35,9 +35,7 @@ import gtk
 import gettext
 import panel
 import pynotify
-
-from gettext import dgettext
-_  = lambda a : dgettext("ibus", a)
+from i18n import _, N_
 
 class UIApplication:
     def __init__ (self):
@@ -58,7 +56,6 @@ class UIApplication:
                             "Please restart ibus input platform."), \
                             "ibus")
         self.__notify.set_timeout(10 * 1000)
-        self.__notify.attach_to_status_icon (self.__panel.get_status_icon())
         self.__notify.add_action("restart", _("Restart Now"), self.__restart_cb, None)
         self.__notify.add_action("ignore", _("Later"), lambda *args: None, None)
 
@@ -110,7 +107,6 @@ def main():
     launch_panel()
 
 if __name__ == "__main__":
-    localedir = os.getenv("IBUS_LOCALEDIR")
-    gettext.bindtextdomain("ibus", localedir)
-    gettext.bind_textdomain_codeset("ibus", "UTF-8")
+    import i18n
+    i18n.init()
     main()

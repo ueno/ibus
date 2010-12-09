@@ -22,6 +22,7 @@
 
 ibussetup_PYTHON = \
 	main.py \
+	i18n.py \
 	icon.py \
 	enginecombobox.py \
 	enginetreeview.py \
@@ -57,7 +58,7 @@ DISTCLEANFILES = \
 	$(NULL)
 
 test:
-	$(ENV) \
+	$(ENV_IBUS_TEST) \
 		PYTHONPATH=$(top_srcdir) \
 		IBUS_PREFIX="@prefix@" \
 		IBUS_LOCALEDIR="@localedir@" \

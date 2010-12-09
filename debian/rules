@@ -8,12 +8,12 @@ build: patch
 	dh $@ --before auto_configure
 	dh_auto_configure -- --enable-static LDFLAGS="-Wl,--as-needed"
 	dh $@ --before auto_test
-	cd po; make ibus.pot # https://bugs.launchpad.net/ubuntu/+source/ibus/+bug/188690
+	cd po; make ibus10.pot # https://bugs.launchpad.net/ubuntu/+source/ibus/+bug/188690
 	dh $@ --after auto_test
 
 install:
 	dh $@ --until auto_install
-	rm -rf $(CURDIR)/debian/tmp/usr/lib/libibus.la \
+	rm -rf $(CURDIR)/debian/tmp/usr/lib/libibus*.la \
 		$(CURDIR)/debian/tmp/usr/lib/gtk-2.0/2.10.0/immodules/im-ibus.a \
 		$(CURDIR)/debian/tmp/usr/lib/gtk-2.0/2.10.0/immodules/im-ibus.la \
 		$(CURDIR)/debian/tmp/etc/xdg \
@@ -21,7 +21,7 @@ install:
 	dh_install --list-missing --fail-missing
 	dh_installdocs # http://bugs.debian.org/cgi-bin/bugreport.cgi?bug=552293
 	dh $@ --after installdocs
-	LD_LIBRARY_PATH=debian/libibus2/usr/lib:$(LD_LIBRARY_PATH) \
+	LD_LIBRARY_PATH=debian/libibus-1.0-0/usr/lib:$(LD_LIBRARY_PATH) \
 		dh_gtkmodules -p ibus-gtk -s
 
 install-stamp: install

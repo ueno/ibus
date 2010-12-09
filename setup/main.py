@@ -30,15 +30,14 @@ import gobject
 import pango
 import ibus
 import keyboardshortcut
+import locale
 from os import path
 from xdg import BaseDirectory
 from gtk import gdk
 from enginecombobox import EngineComboBox
 from enginetreeview import EngineTreeView
 from engineabout import EngineAbout
-
-_  = lambda a : gettext.dgettext("ibus", a)
-N_ = lambda a : a
+from i18n import DOMAINNAME, _, N_, init as i18n_init
 
 (
     COLUMN_NAME,
@@ -68,12 +67,9 @@ class Setup(object):
 
     def __init__(self):
         super(Setup, self).__init__()
-        localedir = os.getenv("IBUS_LOCALEDIR")
-        gettext.bindtextdomain("ibus", localedir)
-        gettext.bind_textdomain_codeset("ibus", "UTF-8")
         gtk_builder_file = path.join(path.dirname(__file__), "./setup.ui")
         self.__builder = gtk.Builder()
-        self.__builder.set_translation_domain("ibus")
+        self.__builder.set_translation_domain(DOMAINNAME)
         self.__builder.add_from_file(gtk_builder_file);
         self.__bus = None
         self.__init_bus()
@@ -459,5 +455,7 @@ class Setup(object):
         gtk.main()
 
 if __name__ == "__main__":
+    locale.setlocale(locale.LC_ALL, '')
+    i18n_init()
     setup = Setup()
     setup.run()

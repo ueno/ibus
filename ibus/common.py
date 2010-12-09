@@ -98,7 +98,7 @@ import ctypes
 #         return None
 #     return address
 
-libibus = ctypes.CDLL("libibus.so.2")
+libibus = ctypes.CDLL("libibus-1.0.so.0")
 get_address = libibus.ibus_get_address
 get_address.restype=ctypes.c_char_p
 
@@ -120,7 +120,7 @@ IBUS_SERVICE_IBUS   = "org.freedesktop.IBus"
 IBUS_IFACE_PANEL            = "org.freedesktop.IBus.Panel"
 IBUS_IFACE_CONFIG           = "org.freedesktop.IBus.Config"
 IBUS_IFACE_ENGINE           = "org.freedesktop.IBus.Engine"
-IBUS_IFACE_ENGINE_FACTORY   = "org.freedesktop.IBus.EngineFactory"
+IBUS_IFACE_ENGINE_FACTORY   = "org.freedesktop.IBus.Factory"
 IBUS_IFACE_INPUT_CONTEXT    = "org.freedesktop.IBus.InputContext"
 IBUS_IFACE_NOTIFICATIONS    = "org.freedesktop.IBus.Notifications"
 

@@ -24,10 +24,9 @@ import gtk
 import gobject
 import pango
 import ibus
-import gettext
+import locale
 from icon import load_icon
-
-_ = lambda a : gettext.dgettext("ibus", a)
+from i18n import _, N_
 
 class EngineComboBox(gtk.ComboBox):
     __gtype_name__ = 'EngineComboBox'
@@ -70,7 +69,8 @@ class EngineComboBox(gtk.ComboBox):
             lang[l].append(e)
 
         keys = lang.keys()
-        keys.sort()
+        keys.sort(locale.strcoll)
+        #add "Others" to the end of the combo box
         if ibus.get_language_name("Other") in keys:
             keys.remove(ibus.get_language_name("Other"))
             keys += [ibus.get_language_name("Other")]
@@ -79,7 +79,7 @@ class EngineComboBox(gtk.ComboBox):
             self.__model.set(iter1, 0, l)
             def cmp_engine(a, b):
                 if a.rank == b.rank:
-                    return cmp(a.longname, b.longname)
+                    return locale.strcoll(a.longname, b.longname)
                 return int(b.rank - a.rank)
             lang[l].sort(cmp_engine)
             for e in lang[l]:

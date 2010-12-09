@@ -24,15 +24,14 @@
 #  include <config.h>
 #endif
 
+#include <gtk/gtk.h>
 #include <gdk/gdkkeysyms.h>
-#include <gdk/gdkx.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <sys/un.h>
-#include <string.h>
 #include <ibus.h>
 #include "ibusimcontext.h"
+
+#if !GTK_CHECK_VERSION (2, 90, 0)
+#  define DEPRECATED_GDK_KEYSYMS 1
+#endif
 
 #ifdef DEBUG
 #  define IDEBUG g_debug
@@ -76,15 +75,15 @@ static guint    _signal_preedit_end_id = 0;
 static guint    _signal_delete_surrounding_id = 0;
 static guint    _signal_retrieve_surrounding_id = 0;
 
-static const gchar *_snooper_apps = SNOOPER_APPS;
+static const gchar *_no_snooper_apps = NO_SNOOPER_APPS;
 static gboolean _use_key_snooper = ENABLE_SNOOPER;
+static guint    _key_snooper_id = 0;
 
 static GtkIMContext *_focus_im_context = NULL;
-static IBusInputContext *_fake_context = NULL;
 static GdkWindow *_input_window = NULL;
 
 /* functions prototype */
-static void     ibus_im_context_class_init  (IBusIMContextClass    *klass);
+static void     ibus_im_context_class_init  (IBusIMContextClass    *class);
 static void     ibus_im_context_init        (GObject               *obj);
 static void     ibus_im_context_finalize    (GObject               *obj);
 static void     ibus_im_context_reset       (GtkIMContext          *context);
@@ -133,9 +132,6 @@ static void     _slave_delete_surrounding_cb
                                              gint               offset_from_cursor,
                                              guint              nchars,
                                              IBusIMContext       *context);
-static void     _create_fake_input_context  (void);
-
-
 
 static GType                _ibus_type_im_context = 0;
 static GtkIMContextClass    *parent_class = NULL;
@@ -159,7 +155,7 @@ ibus_im_context_register_type (GTypeModule *type_module)
         (GInstanceInitFunc)    ibus_im_context_init,
     };
 
-    if (! _ibus_type_im_context ) {
+    if (!_ibus_type_im_context) {
         if (type_module) {
             _ibus_type_im_context =
                 g_type_module_register_type (type_module,
@@ -217,10 +213,6 @@ _key_snooper_cb (GtkWidget   *widget,
         if (_use_key_snooper)
             ibuscontext = ibusimcontext->ibuscontext;
     }
-    else {
-        /* If no IC has focus, and fake IC has been created, then pass key events to fake IC. */
-        ibuscontext = _fake_context;
-    }
 
     if (ibuscontext == NULL)
         return FALSE;
@@ -230,14 +222,6 @@ _key_snooper_cb (GtkWidget   *widget,
 
     if (G_UNLIKELY (event->state & IBUS_IGNORED_MASK))
         return FALSE;
-
-    if (_fake_context == ibuscontext && _input_window != event->window) {
-        if (_input_window)
-            g_object_unref (_input_window);
-        if (event->window)
-            g_object_ref (event->window);
-        _input_window = event->window;
-    }
 
     switch (event->type) {
     case GDK_KEY_RELEASE:
@@ -268,14 +252,14 @@ _key_snooper_cb (GtkWidget   *widget,
 }
 
 static void
-ibus_im_context_class_init     (IBusIMContextClass *klass)
+ibus_im_context_class_init     (IBusIMContextClass *class)
 {
     IDEBUG ("%s", __FUNCTION__);
 
-    GtkIMContextClass *im_context_class = GTK_IM_CONTEXT_CLASS (klass);
-    GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
+    GtkIMContextClass *im_context_class = GTK_IM_CONTEXT_CLASS (class);
+    GObjectClass *gobject_class = G_OBJECT_CLASS (class);
 
-    parent_class = (GtkIMContextClass *) g_type_class_peek_parent (klass);
+    parent_class = (GtkIMContextClass *) g_type_class_peek_parent (class);
 
     im_context_class->reset = ibus_im_context_reset;
     im_context_class->focus_in = ibus_im_context_focus_in;
@@ -288,55 +272,56 @@ ibus_im_context_class_init     (IBusIMContextClass *klass)
     gobject_class->finalize = ibus_im_context_finalize;
 
     _signal_commit_id =
-        g_signal_lookup ("commit", G_TYPE_FROM_CLASS (klass));
+        g_signal_lookup ("commit", G_TYPE_FROM_CLASS (class));
     g_assert (_signal_commit_id != 0);
 
     _signal_preedit_changed_id =
-        g_signal_lookup ("preedit-changed", G_TYPE_FROM_CLASS (klass));
+        g_signal_lookup ("preedit-changed", G_TYPE_FROM_CLASS (class));
     g_assert (_signal_preedit_changed_id != 0);
 
     _signal_preedit_start_id =
-        g_signal_lookup ("preedit-start", G_TYPE_FROM_CLASS (klass));
+        g_signal_lookup ("preedit-start", G_TYPE_FROM_CLASS (class));
     g_assert (_signal_preedit_start_id != 0);
 
     _signal_preedit_end_id =
-        g_signal_lookup ("preedit-end", G_TYPE_FROM_CLASS (klass));
+        g_signal_lookup ("preedit-end", G_TYPE_FROM_CLASS (class));
     g_assert (_signal_preedit_end_id != 0);
 
     _signal_delete_surrounding_id =
-        g_signal_lookup ("delete-surrounding", G_TYPE_FROM_CLASS (klass));
+        g_signal_lookup ("delete-surrounding", G_TYPE_FROM_CLASS (class));
     g_assert (_signal_delete_surrounding_id != 0);
 
     _signal_retrieve_surrounding_id =
-        g_signal_lookup ("retrieve-surrounding", G_TYPE_FROM_CLASS (klass));
+        g_signal_lookup ("retrieve-surrounding", G_TYPE_FROM_CLASS (class));
     g_assert (_signal_retrieve_surrounding_id != 0);
 
-    const gchar *ibus_snooper = g_getenv ("IBUS_SNOOPER");
-    if (ibus_snooper) {
-        /* env IBUS_SNOOPER exist */
-        if (g_strcmp0 (ibus_snooper, "") == 0 ||
-            g_strcmp0 (ibus_snooper, "0") == 0 ||
-            g_strcmp0 (ibus_snooper, "false") == 0 ||
-            g_strcmp0 (ibus_snooper, "FALSE") == 0) {
-            _use_key_snooper = FALSE;
+    const gchar *ibus_disable_snooper = g_getenv ("IBUS_DISABLE_SNOOPER");
+    if (ibus_disable_snooper) {
+        /* env IBUS_DISABLE_SNOOPER exist */
+        if (g_strcmp0 (ibus_disable_snooper, "") == 0 ||
+            g_strcmp0 (ibus_disable_snooper, "0") == 0 ||
+            g_strcmp0 (ibus_disable_snooper, "false") == 0 ||
+            g_strcmp0 (ibus_disable_snooper, "False") == 0 ||
+            g_strcmp0 (ibus_disable_snooper, "FALSE") == 0) {
+            _use_key_snooper = TRUE;
         }
         else {
-            _use_key_snooper = TRUE;
+            _use_key_snooper = FALSE;
         }
     }
     else {
-        /* env IBUS_SNOOPER does not exist */
-        if (!_use_key_snooper) {
+        /* env IBUS_DISABLE_SNOOPER does not exist */
+        if (_use_key_snooper) {
             /* disable snooper if app is in _no_snooper_apps */
             const gchar * prgname = g_get_prgname ();
-            if (g_getenv ("IBUS_SNOOPER_APPS")) {
-                _snooper_apps = g_getenv ("IBUS_SNOOPER_APPS");
+            if (g_getenv ("IBUS_NO_SNOOPER_APPS")) {
+                _no_snooper_apps = g_getenv ("IBUS_NO_SNOOPER_APPS");
             }
             gchar **p;
-            gchar ** apps = g_strsplit (_snooper_apps, ",", 0);
+            gchar ** apps = g_strsplit (_no_snooper_apps, ",", 0);
             for (p = apps; *p != NULL; p++) {
                 if (g_regex_match_simple (*p, prgname, 0, 0)) {
-                    _use_key_snooper = TRUE;
+                    _use_key_snooper = FALSE;
                     break;
                 }
             }
@@ -350,13 +335,10 @@ ibus_im_context_class_init     (IBusIMContextClass *klass)
         _bus = ibus_bus_new();
     }
 
-    if (ibus_bus_is_connected (_bus)) {
-        _create_fake_input_context ();
-    }
-    g_signal_connect (_bus, "connected", G_CALLBACK (_bus_connected_cb), NULL);
 
     /* always install snooper */
-    gtk_key_snooper_install (_key_snooper_cb, NULL);
+    if (_key_snooper_id == 0)
+        _key_snooper_id = gtk_key_snooper_install (_key_snooper_cb, NULL);
 }
 
 static void
@@ -432,7 +414,7 @@ ibus_im_context_finalize (GObject *obj)
     g_signal_handlers_disconnect_by_func (_bus, G_CALLBACK (_bus_connected_cb), obj);
 
     if (ibusimcontext->ibuscontext) {
-        ibus_object_destroy ((IBusObject *)ibusimcontext->ibuscontext);
+        ibus_proxy_destroy ((IBusProxy *)ibusimcontext->ibuscontext);
     }
 
     ibus_im_context_set_client_window ((GtkIMContext *)ibusimcontext, NULL);
@@ -509,14 +491,6 @@ ibus_im_context_filter_keypress (GtkIMContext *context,
 }
 
 static void
-_weak_notify_cb (gpointer data,
-                 GObject *context)
-{
-    if (_focus_im_context == (GtkIMContext *)context)
-        _focus_im_context = NULL;
-}
-
-static void
 ibus_im_context_focus_in (GtkIMContext *context)
 {
     IDEBUG ("%s", __FUNCTION__);
@@ -538,7 +512,8 @@ ibus_im_context_focus_in (GtkIMContext *context)
     _set_cursor_location_internal (context);
 
     if (_focus_im_context != context) {
-        g_object_weak_ref ((GObject *) context, _weak_notify_cb, NULL);
+        g_object_add_weak_pointer ((GObject *) context,
+                                   (gpointer *) &_focus_im_context);
         _focus_im_context = context;
     }
 }
@@ -551,7 +526,8 @@ ibus_im_context_focus_out (GtkIMContext *context)
     IBusIMContext *ibusimcontext = IBUS_IM_CONTEXT (context);
 
     if (_focus_im_context == context) {
-        g_object_weak_unref ((GObject *)_focus_im_context, _weak_notify_cb, NULL);
+        g_object_remove_weak_pointer ((GObject *) context,
+                                      (gpointer *) &_focus_im_context);
         _focus_im_context = NULL;
     }
 
@@ -561,10 +537,6 @@ ibus_im_context_focus_out (GtkIMContext *context)
     }
 
     gtk_im_context_focus_out (ibusimcontext->slave);
-
-    /* focus in the fake ic */
-    if (_fake_context)
-        ibus_input_context_focus_in (_fake_context);
 }
 
 static void
@@ -658,10 +630,15 @@ _set_cursor_location_internal (GtkIMContext *context)
 
     area = ibusimcontext->cursor_area;
     if (area.x == -1 && area.y == -1 && area.width == 0 && area.height == 0) {
+#if GTK_CHECK_VERSION (2, 91, 0)
+        area.x = 0;
+        area.y += gdk_window_get_height (ibusimcontext->client_window);
+#else
         gint w, h;
         gdk_drawable_get_size (ibusimcontext->client_window, &w, &h);
         area.y += h;
         area.x = 0;
+#endif
     }
 
     gdk_window_get_origin (ibusimcontext->client_window, &x, &y);
@@ -681,6 +658,12 @@ ibus_im_context_set_cursor_location (GtkIMContext *context, GdkRectangle *area)
 
     IBusIMContext *ibusimcontext = IBUS_IM_CONTEXT (context);
 
+    if (ibusimcontext->cursor_area.x == area->x &&
+        ibusimcontext->cursor_area.y == area->y &&
+        ibusimcontext->cursor_area.width == area->width &&
+        ibusimcontext->cursor_area.height == area->height) {
+        return;
+    }
     ibusimcontext->cursor_area = *area;
     _set_cursor_location_internal (context);
     gtk_im_context_set_cursor_location (ibusimcontext->slave, area);
@@ -710,10 +693,7 @@ _bus_connected_cb (IBusBus          *bus,
                    IBusIMContext    *ibusimcontext)
 {
     IDEBUG ("%s", __FUNCTION__);
-    if (ibusimcontext)
-        _create_input_context (ibusimcontext);
-    else
-        _create_fake_input_context ();
+    _create_input_context (ibusimcontext);
 }
 
 static void
@@ -733,6 +713,7 @@ _key_is_modifier (guint keyval)
    * really should be implemented */
 
     switch (keyval) {
+#ifdef DEPRECATED_GDK_KEYSYMS
     case GDK_Shift_L:
     case GDK_Shift_R:
     case GDK_Control_L:
@@ -759,6 +740,34 @@ _key_is_modifier (guint keyval)
     case GDK_ISO_Group_Latch:
     case GDK_ISO_Group_Lock:
         return TRUE;
+#else
+    case GDK_KEY_Shift_L:
+    case GDK_KEY_Shift_R:
+    case GDK_KEY_Control_L:
+    case GDK_KEY_Control_R:
+    case GDK_KEY_Caps_Lock:
+    case GDK_KEY_Shift_Lock:
+    case GDK_KEY_Meta_L:
+    case GDK_KEY_Meta_R:
+    case GDK_KEY_Alt_L:
+    case GDK_KEY_Alt_R:
+    case GDK_KEY_Super_L:
+    case GDK_KEY_Super_R:
+    case GDK_KEY_Hyper_L:
+    case GDK_KEY_Hyper_R:
+    case GDK_KEY_ISO_Lock:
+    case GDK_KEY_ISO_Level2_Latch:
+    case GDK_KEY_ISO_Level3_Shift:
+    case GDK_KEY_ISO_Level3_Latch:
+    case GDK_KEY_ISO_Level3_Lock:
+    case GDK_KEY_ISO_Level5_Shift:
+    case GDK_KEY_ISO_Level5_Latch:
+    case GDK_KEY_ISO_Level5_Lock:
+    case GDK_KEY_ISO_Group_Shift:
+    case GDK_KEY_ISO_Group_Latch:
+    case GDK_KEY_ISO_Group_Lock:
+        return TRUE;
+#endif
     default:
         return FALSE;
     }
@@ -789,7 +798,11 @@ _create_gdk_event (IBusIMContext *ibusimcontext,
     event->group = 0;
     event->is_modifier = _key_is_modifier (keyval);
 
+#ifdef DEPRECATED_GDK_KEYSYMS
     if (keyval != GDK_VoidSymbol)
+#else
+    if (keyval != GDK_KEY_VoidSymbol)
+#endif
         c = gdk_keyval_to_unicode (keyval);
 
     if (c) {
@@ -819,12 +832,21 @@ _create_gdk_event (IBusIMContext *ibusimcontext,
                                             NULL);
         if (event->string)
             event->length = bytes_written;
+#ifdef DEPRECATED_GDK_KEYSYMS
     } else if (keyval == GDK_Escape) {
+#else
+    } else if (keyval == GDK_KEY_Escape) {
+#endif
         event->length = 1;
         event->string = g_strdup ("\033");
     }
+#ifdef DEPRECATED_GDK_KEYSYMS
     else if (keyval == GDK_Return ||
              keyval == GDK_KP_Enter) {
+#else
+    else if (keyval == GDK_KEY_Return ||
+             keyval == GDK_KEY_KP_Enter) {
+#endif
         event->length = 1;
         event->string = g_strdup ("\r");
     }
@@ -1028,7 +1050,6 @@ _create_input_context (IBusIMContext *ibusimcontext)
     ibusimcontext->ibuscontext = ibus_bus_create_input_context (_bus, "gtk-im");
 
     g_return_if_fail (ibusimcontext->ibuscontext != NULL);
-    g_object_ref_sink (ibusimcontext->ibuscontext);
 
     g_signal_connect (ibusimcontext->ibuscontext,
                       "commit-text",
@@ -1142,46 +1163,3 @@ _slave_delete_surrounding_cb (GtkIMContext  *slave,
     g_signal_emit (ibusimcontext, _signal_delete_surrounding_id, 0, offset_from_cursor, nchars, &return_value);
 }
 
-#ifdef OS_CHROMEOS
-static void
-_ibus_fake_context_destroy_cb (IBusInputContext *ibuscontext,
-                               gpointer          user_data)
-{
-    /* The fack IC may be destroyed when the connection is lost.
-     * Should release it. */
-    g_assert (ibuscontext == _fake_context);
-    g_object_unref (_fake_context);
-    _fake_context = NULL;
-}
-
-static void
-_create_fake_input_context (void)
-{
-    g_return_if_fail (_fake_context == NULL);
-
-     /* Global engine is always enabled in Chrome OS,
-      * so create fake IC, and set focus if no other IC has focus.
-     */
-    _fake_context = ibus_bus_create_input_context (_bus, "fake");
-    g_return_if_fail (_fake_context != NULL);
-    g_object_ref_sink (_fake_context);
-
-    g_signal_connect (_fake_context, "forward-key-event",
-                      G_CALLBACK (_ibus_context_forward_key_event_cb),
-                      NULL);
-    g_signal_connect (_fake_context, "destroy",
-                      G_CALLBACK (_ibus_fake_context_destroy_cb),
-                      NULL);
-
-    guint32 caps = IBUS_CAP_PREEDIT_TEXT | IBUS_CAP_FOCUS | IBUS_CAP_SURROUNDING_TEXT;
-    ibus_input_context_set_capabilities (_fake_context, caps);
-
-    ibus_input_context_focus_in (_fake_context);
-}
-#else
-static void
-_create_fake_input_context (void)
-{
-    /* For Linux desktop, do not use fake IC. */
-}
-#endif

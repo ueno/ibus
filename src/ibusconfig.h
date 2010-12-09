@@ -19,6 +19,11 @@
  * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
  * Boston, MA 02111-1307, USA.
  */
+
+#if !defined (__IBUS_H_INSIDE__) && !defined (IBUS_COMPILATION)
+#error "Only <ibus.h> can be included directly"
+#endif
+
 /**
  * SECTION: ibusconfig
  * @title: IBusConfig
@@ -76,20 +81,21 @@ GType            ibus_config_get_type       (void);
 
 /**
  * ibus_config_new:
- * @connection: An IBusConnection.
+ * @connection: An GDBusConnection.
  * @returns: An newly allocated IBusConfig corresponding to @connection.
  *
- * New a IBusConfig from existing IBusConnection.
+ * New a IBusConfig from existing GDBusConnection.
  */
-IBusConfig      *ibus_config_new            (IBusConnection     *connection);
+IBusConfig      *ibus_config_new            (GDBusConnection    *connection,
+                                             GCancellable       *cancellable,
+                                             GError            **error);
 
 /**
  * ibus_config_get_value:
  * @config: An IBusConfig
  * @section: Section name of the configuration option.
  * @name: Name of the configure option.
- * @value: GValue that holds the value.
- * @returns: TRUE if succeed; FALSE otherwise.
+ * @returns: A #GVariant or %NULL. Free with g_variant_unref().
  *
  * Get the value of a configuration option.
  *
@@ -102,17 +108,51 @@ IBusConfig      *ibus_config_new            (IBusConnection     *connection);
  * so the section name for it is "engine/Chewing".
  * @see_also: ibus_config_set_value.
  */
-gboolean         ibus_config_get_value      (IBusConfig         *config,
+GVariant        *ibus_config_get_value      (IBusConfig         *config,
+                                             const gchar        *section,
+                                             const gchar        *name);
+
+/**
+ * ibus_config_get_value_async:
+ * @config: An IBusConfig
+ * @section: Section name of the configuration option.
+ * @name: Name of the configure option.
+ * @cancellable: A #GCancellable or %NULL.
+ * @callback: Callback function to invoke when the return value is ready.
+ *
+ * Get the value of a configuration option.
+ *
+ * @see_also: ibus_config_get_value.
+ */
+void             ibus_config_get_value_async(IBusConfig         *config,
                                              const gchar        *section,
                                              const gchar        *name,
-                                             GValue             *value);
+                                             GCancellable       *cancellable,
+                                             GAsyncReadyCallback callback,
+                                             gpointer            user_data);
+
+/**
+ * ibus_config_get_value_async_finish:
+ * @confi: A #IBusConfig.
+ * @result: A #GAsyncResult.
+ * @error: Return location for error or %NULL.
+ * @returns: A #GVariant or %NULL if error is set. Free with g_variant_unref().
+ * 
+ * Finish get value of a configuration option.
+ *
+ * @see_also: ibus_config_get_value_async.
+ */
+GVariant        *ibus_config_get_value_async_finish
+                                            (IBusConfig         *config,
+                                             GAsyncResult       *result,
+                                             GError            **error);
 
 /**
  * ibus_config_set_value:
  * @config: An IBusConfig
  * @section: Section name of the configuration option.
  * @name: Name of the configure option its self.
- * @value: GValue that holds the value.
+ * @value: A #GVariant that holds the value.
  * @returns: TRUE if succeed; FALSE otherwise.
  *
  * Set the value of a configuration option.
@@ -121,7 +161,44 @@ gboolean         ibus_config_get_value      (IBusConfig         *config,
 gboolean         ibus_config_set_value      (IBusConfig         *config,
                                              const gchar        *section,
                                              const gchar        *name,
-                                             const GValue       *value);
+                                             GVariant           *value);
+
+/**
+ * ibus_config_set_value_async:
+ * @config: An #IBusConfig
+ * @section: Section name of the configuration option.
+ * @name: Name of the configure option.
+ * @value: A #GVariant that holds the value.
+ * @cancellable: A #GCancellable or %NULL.
+ * @callback: Callback function to invoke when the return value is ready.
+ *
+ * Set the value of a configuration option.
+ *
+ * @see_also: ibus_config_set_value.
+ */
+void             ibus_config_set_value_async(IBusConfig         *config,
+                                             const gchar        *section,
+                                             const gchar        *name,
+                                             GVariant           *value,
+                                             GCancellable       *cancellable,
+                                             GAsyncReadyCallback callback,
+                                             gpointer            user_data);
+
+/**
+ * ibus_config_set_value_async_finish:
+ * @confi: A #IBusConfig.
+ * @result: A #GAsyncResult.
+ * @error: Return location for error or %NULL.
+ * @returns: %TRUE or %FALSE if error is set.
+ * 
+ * Finish set value of a configuration option.
+ *
+ * @see_also: ibus_config_set_value_async.
+ */
+gboolean         ibus_config_set_value_async_finish
+                                            (IBusConfig         *config,
+                                             GAsyncResult       *result,
+                                             GError            **error);
 
 /**
  * ibus_config_unset:

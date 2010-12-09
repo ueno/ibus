@@ -22,6 +22,7 @@
 
 import gtk
 import gtk.gdk as gdk
+import glib
 import gobject
 import ibus
 import icon as _icon
@@ -34,9 +35,7 @@ from languagebar import LanguageBar
 from candidatepanel import CandidatePanel
 from engineabout import EngineAbout
 
-from gettext import dgettext
-_  = lambda a : dgettext("ibus", a)
-N_ = lambda a : a
+from i18n import _, N_
 
 ICON_KEYBOARD = "ibus-keyboard"
 ICON_ENGINE = "ibus-engine"
@@ -63,14 +62,11 @@ class Panel(ibus.PanelBase):
         self.__bus = bus
         self.__config = self.__bus.get_config()
         self.__focus_ic = None
-        self.__setup_pid = 0
+        self.__setup_pid = None
         self.__prefix = os.getenv("IBUS_PREFIX")
         self.__data_dir = path.join(self.__prefix, "share", "ibus")
         # self.__icons_dir = path.join(self.__data_dir, "icons")
         self.__setup_cmd = path.join(self.__prefix, "bin", "ibus-setup")
-
-        # hanlder signal
-        signal.signal(signal.SIGCHLD, self.__sigchld_cb)
 
         # connect bus signal
         self.__config.connect("value-changed", self.__config_value_changed_cb)
@@ -122,7 +118,7 @@ class Panel(ibus.PanelBase):
         # self.__bus.request_name(ibus.panel.IBUS_SERVICE_PANEL, 0)
 
     def set_cursor_location(self, x, y, w, h):
-        self.__candidate_panel.set_cursor_location(x + w, y + h)
+        self.__candidate_panel.set_cursor_location(x, y, w, h)
 
     def update_preedit_text(self, text, cursor_pos, visible):
         self.__candidate_panel.update_preedit_text(text, cursor_pos, visible)
@@ -501,20 +497,23 @@ class Panel(ibus.PanelBase):
         else:
             print >> sys.stderr, "Unknown command %s" % command
 
-    def __sigchld_cb(self, sig, sf):
-        try:
-            pid, status = os.wait()
-            if self.__setup_pid == pid:
-                self.__setup_pid = 0
-        except:
-            pass
+    def __child_watch_cb(self, pid, status):
+        if self.__setup_pid == pid:
+            self.__setup_pid.close()
+            self.__setup_pid = None
 
     def __start_setup(self):
-        if self.__setup_pid != 0:
-            pid, state = os.waitpid(self.__setup_pid, os.P_NOWAIT)
-            if pid != self.__setup_pid:
+        if self.__setup_pid != None:
+            try:
+                # if setup dialog is running, bring the dialog to front by SIGUSR1
                 os.kill(self.__setup_pid, signal.SIGUSR1)
                 return
-            self.__setup_pid = 0
-        self.__setup_pid = os.spawnl(os.P_NOWAIT, self.__setup_cmd, "ibus-setup")
+            except OSError:
+                # seems the setup dialog is not running anymore
+                self.__setup_pid.close()
+                self.__setup_pid = None
 
+        pid = glib.spawn_async(argv=[self.__setup_cmd, "ibus-setup"],
+                               flags=glib.SPAWN_DO_NOT_REAP_CHILD)[0]
+        self.__setup_pid = pid
+        glib.child_watch_add(self.__setup_pid, self.__child_watch_cb)
