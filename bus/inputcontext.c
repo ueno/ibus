@@ -847,7 +847,7 @@ _ic_property_activate (BusInputContext       *context,
                        GDBusMethodInvocation *invocation)
 {
     gchar *prop_name = NULL;
-    gint prop_state = 0;
+    guint prop_state = 0;
     g_variant_get (parameters, "(&su)", &prop_name, &prop_state);
 
     if (context->enabled && context->engine) {
