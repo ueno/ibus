@@ -239,7 +239,7 @@ static const gchar introspection_xml[] =
     "    </method>"
     "    <method name='PropertyActivate'>"
     "      <arg direction='in' type='s' name='name' />"
-    "      <arg direction='in' type='i' name='state' />"
+    "      <arg direction='in' type='u' name='state' />"
     "    </method>"
     "    <method name='SetEngine'>"
     "      <arg direction='in' type='s' name='name' />"
@@ -2248,7 +2248,7 @@ bus_input_context_filter_keyboard_shortcuts (BusInputContext    *context,
         }
     }
 
-    if (keycode != 0 && bus_ibus_impl_is_use_sys_layout (BUS_DEFAULT_IBUS)) {
+    if (keycode != 0 && bus_ibus_impl_is_use_sys_layout (BUS_DEFAULT_IBUS) == FALSE) {
         IBusKeymap *keymap = BUS_DEFAULT_KEYMAP;
         if (keymap != NULL) {
             guint tmp = ibus_keymap_lookup_keysym (keymap,

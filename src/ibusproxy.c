@@ -82,6 +82,7 @@ ibus_proxy_class_init (IBusProxyClass *class)
 static void
 ibus_proxy_init (IBusProxy *proxy)
 {
+    proxy->own = TRUE;
 }
 
 static void
@@ -99,6 +100,11 @@ ibus_proxy_constructed (GObject *object)
     /* FIXME add match rules? */
 }
 
+/**
+ * ibus_proxy_dispose:
+ *
+ * Override GObject's dispose function.
+ */
 static void
 ibus_proxy_dispose (GObject *object)
 {
@@ -114,12 +120,17 @@ ibus_proxy_dispose (GObject *object)
     G_OBJECT_CLASS(ibus_proxy_parent_class)->dispose (object);
 }
 
+/**
+ * ibus_proxy_real_destroy:
+ *
+ * Handle "destroy" signal which is emitted by ibus_proxy_dispose.
+ */
 static void
 ibus_proxy_real_destroy (IBusProxy *proxy)
 {
     GDBusConnection *connection = g_dbus_proxy_get_connection ((GDBusProxy *) proxy);
     g_assert (connection != NULL);
-    if (!g_dbus_connection_is_closed (connection)) {
+    if (!g_dbus_connection_is_closed (connection) && proxy->own) {
         g_dbus_proxy_call ((GDBusProxy *)proxy,
                            "org.freedesktop.IBus.Service.Destroy",
                            NULL,

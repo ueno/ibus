@@ -28,9 +28,6 @@
 #include "ibuslookuptable.h"
 #include "ibusproplist.h"
 
-#define IBUS_INPUT_CONTEXT_GET_PRIVATE(o)  \
-   (G_TYPE_INSTANCE_GET_PRIVATE ((o), IBUS_TYPE_INPUT_CONTEXT, IBusInputContextPrivate))
-
 enum {
     ENABLED,
     DISABLED,
@@ -55,15 +52,7 @@ enum {
     LAST_SIGNAL,
 };
 
-
-/* BusInputContextPriv */
-struct _IBusInputContextPrivate {
-    gboolean own;
-};
-typedef struct _IBusInputContextPrivate IBusInputContextPrivate;
-
 static guint            context_signals[LAST_SIGNAL] = { 0 };
-// static guint            context_signals[LAST_SIGNAL] = { 0 };
 
 /* functions prototype */
 static void     ibus_input_context_g_signal     (GDBusProxy             *proxy,
@@ -77,8 +66,6 @@ static void
 ibus_input_context_class_init (IBusInputContextClass *class)
 {
     GDBusProxyClass *g_dbus_proxy_class = G_DBUS_PROXY_CLASS (class);
-
-    g_type_class_add_private (class, sizeof (IBusInputContextPrivate));
 
     g_dbus_proxy_class->g_signal = ibus_input_context_g_signal;
 
@@ -447,9 +434,6 @@ ibus_input_context_class_init (IBusInputContextClass *class)
 static void
 ibus_input_context_init (IBusInputContext *context)
 {
-    IBusInputContextPrivate *priv;
-    priv = IBUS_INPUT_CONTEXT_GET_PRIVATE (context);
-    priv->own = TRUE;
 }
 
 static void
@@ -594,7 +578,7 @@ ibus_input_context_g_signal (GDBusProxy  *proxy,
         guint32 keycode;
         guint32 state;
 
-        g_variant_get (parameters, 0, "(uuu)", &keyval, &keycode, &state);
+        g_variant_get (parameters, "(uuu)", &keyval, &keycode, &state);
 
         /* Forward key event back with IBUS_FORWARD_MASK. And process_key_event will
          * not process key event with IBUS_FORWARD_MASK again. */
@@ -611,7 +595,7 @@ ibus_input_context_g_signal (GDBusProxy  *proxy,
         gint offset_from_cursor;
         guint nchars;
 
-        g_variant_get (parameters, 0, "(iu)", &offset_from_cursor, &nchars);
+        g_variant_get (parameters, "(iu)", &offset_from_cursor, &nchars);
 
         g_signal_emit (context,
                        context_signals[DELETE_SURROUNDING_TEXT],
@@ -672,7 +656,7 @@ ibus_input_context_new (const gchar     *path,
                                error,
                                "g-connection",      connection,
                                "g-name",            "org.freedesktop.IBus",
-                               "g-flags",           G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                               "g-flags",           G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START | G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES,
                                "g-interface-name",  IBUS_INTERFACE_INPUT_CONTEXT,
                                "g-object-path",     path,
                                NULL);
@@ -686,7 +670,7 @@ ibus_input_context_get_input_context (const gchar        *path,
                                       GDBusConnection     *connection)
 {
     IBusInputContext *context;
-    GError *error;
+    GError *error = NULL;
 
     context = ibus_input_context_new (path, connection, NULL, &error);
     if (!context) {
@@ -695,10 +679,9 @@ ibus_input_context_get_input_context (const gchar        *path,
         return NULL;
     }
 
-    IBusInputContextPrivate *priv;
-    priv = IBUS_INPUT_CONTEXT_GET_PRIVATE (context);
-    priv->own = FALSE;
-
+    /* Do not call "org.freedesktop.IBus.Service.Destroy" when the input
+     * context object is disposed. */
+    IBUS_PROXY (context)->own = FALSE;
     return context;
 }
 

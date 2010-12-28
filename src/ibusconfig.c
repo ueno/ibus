@@ -142,14 +142,20 @@ ibus_config_new (GDBusConnection  *connection,
                                cancellable,
                                error,
                                "g-connection",      connection,
-                               "g-flags",           G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                               "g-flags",           G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START | G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES,
                                "g-name",            IBUS_SERVICE_CONFIG,
                                "g-interface-name",  IBUS_INTERFACE_CONFIG,
                                "g-object-path",     IBUS_PATH_CONFIG,
                                NULL);
-    if (initable != NULL)
-        return IBUS_CONFIG (initable);
-    return NULL;
+    if (initable == NULL)
+        return NULL;
+
+    if (g_dbus_proxy_get_name_owner (G_DBUS_PROXY (initable)) == NULL) {
+        /* The configuration daemon, which is usually ibus-gconf, is not started yet. */
+        g_object_unref (initable);
+        return NULL;
+    }
+    return IBUS_CONFIG (initable);
 }
 
 GVariant *
