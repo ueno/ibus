@@ -310,6 +310,7 @@ bus_ibus_impl_set_trigger (BusIBusImpl *ibus,
 #ifndef OS_CHROMEOS
     else {
         /* set default trigger */
+        ibus_hotkey_profile_remove_hotkey_by_event (ibus->hotkey_profile, hotkey);
         ibus_hotkey_profile_add_hotkey (ibus->hotkey_profile,
                                         IBUS_space,
                                         IBUS_CONTROL_MASK,
@@ -518,8 +519,18 @@ bus_ibus_impl_set_default_preload_engines (BusIBusImpl *ibus)
         if (ibus_engine_desc_get_rank (desc) > 0)
             g_variant_builder_add (&builder, "s", ibus_engine_desc_get_name (desc));
     }
-    ibus_config_set_value (ibus->config,
-                    "general", "preload_engines", g_variant_builder_end (&builder));
+
+    GVariant *value = g_variant_builder_end (&builder);
+    if (value != NULL) {
+        if (g_variant_n_children (value) > 0) {
+            ibus_config_set_value (ibus->config,
+                                   "general", "preload_engines", value);
+        } else {
+            /* We don't update preload_engines with an empty string for safety.
+             * Just unref the floating value. */
+            g_variant_unref (value);
+        }
+    }
     g_list_free (engines);
 }
 
@@ -680,9 +691,11 @@ _dbus_name_owner_changed_cb (BusDBusImpl *dbus,
                                            NULL,
                                            /* The following properties are necessary to initialize GDBusProxy object
                                             * which is a parent of the config object. */
-                                           "g-object-path", IBUS_PATH_CONFIG,
-                                           "g-interface-name", IBUS_INTERFACE_CONFIG,
-                                           "g-connection", bus_connection_get_dbus_connection (connection),
+                                           "g-connection",      bus_connection_get_dbus_connection (connection),
+                                           "g-flags",           G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START | G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES,
+                                           "g-interface-name",  IBUS_INTERFACE_CONFIG,
+                                           "g-object-path",     IBUS_PATH_CONFIG,
+                                           "g-default-timeout", g_gdbus_timeout,
                                            NULL);
 
             g_signal_connect (ibus->config,
@@ -944,8 +957,15 @@ _context_request_engine_cb (BusInputContext *context,
             else if (ibus->engine_list) {
                 desc = (IBusEngineDesc *) ibus->engine_list->data;
             }
-         }
-        g_return_if_fail (desc != NULL);
+        }
+        if (!desc) {
+            /* no engine is available. the user hasn't ran ibus-setup yet and
+             * the bus_ibus_impl_set_default_preload_engines() function could
+             * not find any default engines. another possiblity is that the
+             * user hasn't installed an engine yet? just give up. */
+            g_warning ("No engine is available. Run ibus-setup first.");
+            return;
+        }
     }
 
     bus_ibus_impl_set_context_engine_from_desc (ibus, context, desc);
@@ -1037,7 +1057,7 @@ bus_ibus_impl_set_context_engine_from_desc (BusIBusImpl     *ibus,
 {
     bus_input_context_set_engine_by_desc (context,
                                           desc,
-                                          5000, /* timeout in msec. */
+                                          g_gdbus_timeout, /* timeout in msec. */
                                           NULL, /* we do not cancel the call. */
                                           NULL, /* use the default callback function. */
                                           NULL);
@@ -1660,7 +1680,7 @@ _ibus_set_global_engine (BusIBusImpl           *ibus,
 
     bus_input_context_set_engine_by_desc (context,
                                           desc,
-                                          5000, /* timeout in msec. */
+                                          g_gdbus_timeout, /* timeout in msec. */
                                           NULL, /* we do not cancel the call. */
                                           (GAsyncReadyCallback) _ibus_set_global_engine_ready_cb,
                                           invocation);
