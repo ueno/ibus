@@ -90,6 +90,8 @@ typedef struct _IBusEngineDescClass IBusEngineDescClass;
  * the front.
  * hotkeys: One or more hotkeys for switching to this engine, separated by
  *  semi-colon.
+ * requires: Capabilities this engine will utilize.  The value is the
+ * union of the IBusCapability flags.
  */
 struct _IBusEngineDesc {
     IBusSerializable parent;
@@ -247,6 +249,15 @@ guint            ibus_engine_desc_get_rank      (IBusEngineDesc *info);
  * Return the hotkeys property in IBusEngineDesc. It should not be freed.
  */
 const gchar     *ibus_engine_desc_get_hotkeys   (IBusEngineDesc *info);
+
+/**
+ * ibus_engine_desc_get_requires:
+ * @info: An IBusEngineDesc
+ * @returns: request capabilites property in IBusEngineDesc
+ *
+ * Return the capabilites property in IBusEngineDesc.
+ */
+guint            ibus_engine_desc_get_requires  (IBusEngineDesc *info);
 
 /**
  * ibus_engine_desc_output:

@@ -61,6 +61,7 @@ struct _IBusIMContext {
     gboolean         has_focus;
 
     guint32          time;
+    guint            supported_caps;
     gint             caps;
 
     /* cancellable */
@@ -150,6 +151,7 @@ static gboolean _slave_delete_surrounding_cb
 static void     _request_surrounding_text   (IBusIMContext      *context,
                                              gboolean            force);
 static void     _create_fake_input_context  (void);
+static void     _negotiate_capabilities     (IBusIMContext      *context);
 
 
 
@@ -580,10 +582,11 @@ ibus_im_context_init (GObject *obj)
     ibusimcontext->has_focus = FALSE;
     ibusimcontext->time = GDK_CURRENT_TIME;
 #ifdef ENABLE_SURROUNDING
-    ibusimcontext->caps = IBUS_CAP_PREEDIT_TEXT | IBUS_CAP_FOCUS | IBUS_CAP_SURROUNDING_TEXT;
+    ibusimcontext->supported_caps = IBUS_CAP_PREEDIT_TEXT | IBUS_CAP_FOCUS | IBUS_CAP_SURROUNDING_TEXT;
 #else
-    ibusimcontext->caps = IBUS_CAP_PREEDIT_TEXT | IBUS_CAP_FOCUS;
+    ibusimcontext->supported_caps = IBUS_CAP_PREEDIT_TEXT | IBUS_CAP_FOCUS;
 #endif
+    ibusimcontext->caps = ibusimcontext->supported_caps;
 
 
     // Create slave im context
@@ -930,6 +933,27 @@ ibus_im_context_set_cursor_location (GtkIMContext *context, GdkRectangle *area)
 }
 
 static void
+_negotiate_capabilities (IBusIMContext *context)
+{
+    if (context->enable) {
+        IBusEngineDesc *engine =
+            ibus_input_context_get_engine (context->ibuscontext);
+
+        if (engine) {
+            context->caps = context->supported_caps &
+                ibus_engine_desc_get_requires (engine);
+            ibus_input_context_set_capabilities (context->ibuscontext,
+                                                 context->caps);
+        IDEBUG ("engine %s: supported caps = %u, engine wants = %u, caps = %u",
+                ibus_engine_desc_get_name (engine),
+                context->supported_caps,
+                ibus_engine_desc_get_requires (engine),
+                context->caps);
+        }
+    }
+}
+
+static void
 ibus_im_context_set_use_preedit (GtkIMContext *context, gboolean use_preedit)
 {
     IDEBUG ("%s", __FUNCTION__);
@@ -938,11 +962,12 @@ ibus_im_context_set_use_preedit (GtkIMContext *context, gboolean use_preedit)
 
     if(ibusimcontext->ibuscontext) {
         if (use_preedit) {
-            ibusimcontext->caps |= IBUS_CAP_PREEDIT_TEXT;
+            ibusimcontext->supported_caps |= IBUS_CAP_PREEDIT_TEXT;
         }
         else {
-            ibusimcontext->caps &= ~IBUS_CAP_PREEDIT_TEXT;
+            ibusimcontext->supported_caps &= ~IBUS_CAP_PREEDIT_TEXT;
         }
+        _negotiate_capabilities (ibusimcontext);
     }
     gtk_im_context_set_use_preedit (ibusimcontext->slave, use_preedit);
 }
@@ -1320,6 +1345,7 @@ _ibus_context_enabled_cb (IBusInputContext *ibuscontext,
     IDEBUG ("%s", __FUNCTION__);
 
     ibusimcontext->enable = TRUE;
+    _negotiate_capabilities (ibusimcontext);
 
     /* retrieve the initial surrounding-text (regardless of whether
      * the current IBus engine needs surrounding-text) */

@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include "ibusenginedesc.h"
 #include "ibusxml.h"
+#include "ibusenumtypes.h"
 
 enum {
     LAST_SIGNAL,
@@ -39,6 +40,7 @@ enum {
     PROP_LAYOUT,
     PROP_RANK,
     PROP_HOTKEYS,
+    PROP_REQUIRES,
 };
 
 
@@ -54,6 +56,7 @@ struct _IBusEngineDescPrivate {
     gchar      *layout;
     guint       rank;
     gchar      *hotkeys;
+    guint       requires;
 };
 
 #define IBUS_ENGINE_DESC_GET_PRIVATE(o)  \
@@ -79,9 +82,20 @@ static gboolean     ibus_engine_desc_copy           (IBusEngineDesc         *des
                                                      const IBusEngineDesc   *src);
 static gboolean     ibus_engine_desc_parse_xml_node (IBusEngineDesc         *desc,
                                                      XMLNode                *node);
+static void         ibus_engine_desc_output_capabilities
+                                                    (guint                   caps,
+                                                     GString                *output,
+                                                     gint                    indent);
+static guint        ibus_engine_desc_parse_capabilities
+                                                    (XMLNode                *node);
 
 G_DEFINE_TYPE (IBusEngineDesc, ibus_engine_desc, IBUS_TYPE_SERIALIZABLE)
 
+#define DEFAULT_REQUIRES (IBUS_CAP_PREEDIT_TEXT |   \
+                          IBUS_CAP_AUXILIARY_TEXT | \
+                          IBUS_CAP_LOOKUP_TABLE |   \
+                          IBUS_CAP_FOCUS |          \
+                          IBUS_CAP_PROPERTY)
 
 static void
 ibus_engine_desc_class_init (IBusEngineDescClass *class)
@@ -232,6 +246,21 @@ ibus_engine_desc_class_init (IBusEngineDescClass *class)
                         "The hotkeys of engine description",
                         "",
                         G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+
+    /**
+     * IBusEngineDesc:requires:
+     *
+     * The required capabilities of engine description
+     */
+    g_object_class_install_property (gobject_class,
+                    PROP_REQUIRES,
+                    g_param_spec_uint ("requires",
+                        "description requires",
+                        "The required capabilities of engine description",
+                        0,
+                        G_MAXUINT,
+                        DEFAULT_REQUIRES,
+                        G_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
 }
 
 static void
@@ -249,6 +278,7 @@ ibus_engine_desc_init (IBusEngineDesc *desc)
     desc->priv->layout = NULL;
     desc->priv->rank = 0;
     desc->priv->hotkeys = NULL;
+    desc->priv->requires = DEFAULT_REQUIRES;
 }
 
 static void
@@ -313,6 +343,9 @@ ibus_engine_desc_set_property (IBusEngineDesc *desc,
         g_assert (desc->priv->hotkeys == NULL);
         desc->priv->hotkeys = g_value_dup_string (value);
         break;
+    case PROP_REQUIRES:
+        desc->priv->requires = g_value_get_uint (value);
+        break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID (desc, prop_id, pspec);
     }
@@ -355,6 +388,9 @@ ibus_engine_desc_get_property (IBusEngineDesc *desc,
     case PROP_HOTKEYS:
         g_value_set_string (value, ibus_engine_desc_get_hotkeys (desc));
         break;
+    case PROP_REQUIRES:
+        g_value_set_uint (value, ibus_engine_desc_get_requires (desc));
+        break;
     default:
         G_OBJECT_WARN_INVALID_PROPERTY_ID (desc, prop_id, pspec);
     }
@@ -382,7 +418,26 @@ ibus_engine_desc_serialize (IBusEngineDesc  *desc,
     g_variant_builder_add (builder, "u", desc->priv->rank);
     g_variant_builder_add (builder, "s", NOTNULL (desc->priv->hotkeys));
 #undef NOTNULL
+
+    /* append extra properties */
+    GVariantBuilder array;
+    g_variant_builder_init (&array, G_VARIANT_TYPE ("a{sv}"));
+    g_variant_builder_add (&array, "{sv}", "requires", g_variant_new_uint32 (desc->priv->requires));
+    g_variant_builder_add (builder, "v", g_variant_builder_end (&array));
+
     return TRUE;
+}
+
+static gboolean
+ibus_engine_desc_deserialize_property (IBusEngineDesc *desc,
+                                       const gchar    *name,
+                                       GVariant       *variant)
+{
+    if (g_strcmp0 (name, "requires") == 0) {
+        g_variant_get (variant, "u", &desc->priv->requires);
+        return TRUE;
+    }
+    return FALSE;
 }
 
 static gint
@@ -404,6 +459,23 @@ ibus_engine_desc_deserialize (IBusEngineDesc *desc,
     g_variant_get_child (variant, retval++, "s", &desc->priv->layout);
     g_variant_get_child (variant, retval++, "u", &desc->priv->rank);
     g_variant_get_child (variant, retval++, "s", &desc->priv->hotkeys);
+
+    /* extract extra properties */
+    GVariantIter iter;
+    GVariant *child, *array;
+
+    g_variant_get_child (variant, retval++, "v", &array);
+    g_variant_iter_init (&iter, array);
+    while ((child = g_variant_iter_next_value (&iter))) {
+        gchar *name;
+        GVariant *value;
+        g_variant_get (child, "{sv}", &name, &value);
+        if (ibus_engine_desc_deserialize_property (desc, name, value))
+            retval++;
+        g_free (name);
+        g_variant_unref (value);
+        g_variant_unref (child);
+    }
 
     return retval;
 }
@@ -428,6 +500,7 @@ ibus_engine_desc_copy (IBusEngineDesc       *dest,
     dest->priv->layout           = g_strdup (src->priv->layout);
     dest->priv->rank             = src->priv->rank;
     dest->priv->hotkeys          = g_strdup (src->priv->hotkeys);
+    dest->priv->requires         = src->priv->requires;
     return TRUE;
 }
 
@@ -438,6 +511,52 @@ ibus_engine_desc_copy (IBusEngineDesc       *dest,
             g_string_append (string, "    ");   \
         }                                       \
     }
+
+static void
+ibus_engine_desc_output_capabilities (guint    caps,
+                                      GString *output,
+                                      gint     indent)
+{
+    GFlagsClass *flags_class;
+    gint i;
+
+    flags_class = g_type_class_ref (IBUS_TYPE_CAPABILITE);
+    g_return_if_fail (G_TYPE_IS_FLAGS (IBUS_TYPE_CAPABILITE));
+    for (i = 0; i < flags_class->n_values; i++) {
+        GFlagsValue *flags_value = &flags_class->values[i];
+        if (caps & flags_value->value) {
+            g_string_append_indent (output, indent + 1);
+            g_string_append_printf (output, "<capability>%s</capability>\n",
+                                    flags_value->value_nick);
+        }
+    }
+    g_type_class_unref (flags_class);
+}
+
+static guint
+ibus_engine_desc_parse_capabilities (XMLNode *node)
+{
+    GFlagsClass *flags_class;
+    guint caps = 0;
+    GList *p;
+
+    flags_class = g_type_class_ref (IBUS_TYPE_CAPABILITE);
+    for (p = node->sub_nodes; p != NULL; p = p->next) {
+        XMLNode *sub_node = (XMLNode *) p->data;
+
+        if (g_strcmp0 (sub_node->name, "capability") == 0) {
+            gint i;
+            for (i = 0; i < flags_class->n_values; i++) {
+                GFlagsValue *flags_value = &flags_class->values[i];
+                if (g_strcmp0 (flags_value->value_nick, sub_node->text) == 0)
+                    caps |= flags_value->value;
+            }
+        }
+    }
+    g_type_class_unref (flags_class);
+
+    return caps;
+}
 
 void
 ibus_engine_desc_output (IBusEngineDesc *desc,
@@ -467,6 +586,13 @@ ibus_engine_desc_output (IBusEngineDesc *desc,
     OUTPUT_ENTRY_1(hotkeys);
     g_string_append_indent (output, indent + 1);
     g_string_append_printf (output, "<rank>%u</rank>\n", desc->priv->rank);
+
+    g_string_append_indent (output, indent + 1);
+    g_string_append (output, "<requires>\n");
+    ibus_engine_desc_output_capabilities (desc->priv->requires, output,
+                                          indent + 2);
+    g_string_append_indent (output, indent + 1);
+    g_string_append (output, "</requires>\n");
 #undef OUTPUT_ENTRY
 #undef OUTPUT_ENTRY_1
     g_string_append_indent (output, indent);
@@ -504,6 +630,11 @@ ibus_engine_desc_parse_xml_node (IBusEngineDesc *desc,
             desc->priv->rank = atoi (sub_node->text);
             continue;
         }
+        if (g_strcmp0 (sub_node->name , "requires") == 0) {
+            desc->priv->requires =
+                ibus_engine_desc_parse_capabilities (sub_node);
+            continue;
+        }
         g_warning ("<engines> element contains invalidate element <%s>", sub_node->name);
     }
     return TRUE;
@@ -526,6 +657,7 @@ IBUS_ENGINE_DESC_GET_PROPERTY (icon, const gchar *)
 IBUS_ENGINE_DESC_GET_PROPERTY (layout, const gchar *)
 IBUS_ENGINE_DESC_GET_PROPERTY (rank, guint)
 IBUS_ENGINE_DESC_GET_PROPERTY (hotkeys, const gchar *)
+IBUS_ENGINE_DESC_GET_PROPERTY (requires, guint)
 #undef IBUS_ENGINE_DESC_GET_PROPERTY
 
 IBusEngineDesc *
