@@ -386,7 +386,7 @@ xim_destroy_ic (XIMS xims, IMChangeICStruct *call_data)
     g_return_val_if_fail (x11ic != NULL, 0);
 
     if (x11ic->context) {
-        ibus_object_destroy ((IBusObject *)x11ic->context);
+        ibus_proxy_destroy ((IBusProxy *)x11ic->context);
         g_object_unref (x11ic->context);
         x11ic->context = NULL;
     }
@@ -470,7 +470,6 @@ xim_forward_event (XIMS xims, IMForwardEventStruct *call_data)
     if (event.type == GDK_KEY_RELEASE) {
         event.state |= IBUS_RELEASE_MASK;
     }
-
     retval = ibus_input_context_process_key_event (x11ic->context,
                                                    event.keyval,
                                                    event.hardware_keycode - 8,
@@ -527,6 +526,7 @@ _free_ic (gpointer data, gpointer user_data)
     g_return_if_fail (x11ic != NULL);
 
     g_free (x11ic->preedit_string);
+    x11ic->preedit_string = NULL;
 
     if (x11ic->preedit_attrs) {
         g_object_unref (x11ic->preedit_attrs);
@@ -534,7 +534,7 @@ _free_ic (gpointer data, gpointer user_data)
     }
 
     if (x11ic->context) {
-        ibus_object_destroy ((IBusObject *)x11ic->context);
+        ibus_proxy_destroy ((IBusProxy *)x11ic->context);
         g_object_unref (x11ic->context);
         x11ic->context = NULL;
     }

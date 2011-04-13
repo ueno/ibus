@@ -20,11 +20,29 @@
  * Boston, MA 02111-1307, USA.
  */
 #include "inputcontext.h"
-#include "types.h"
-#include "marshalers.h"
-#include "ibusimpl.h"
+
+#include <string.h>
+
 #include "engineproxy.h"
 #include "factoryproxy.h"
+#include "ibusimpl.h"
+#include "marshalers.h"
+#include "option.h"
+#include "types.h"
+
+struct _SetEngineByDescData {
+    /* context related to the data */
+    BusInputContext *context;
+    /* set engine by desc result, cancellable */
+    GSimpleAsyncResult *simple;
+    /* a object to cancel bus_engine_proxy_new call */
+    GCancellable *cancellable;
+    /* a object being passed to the bus_input_context_set_engine_by_desc function. if origin_cancellable is cancelled by someone,
+     * we cancel the cancellable above as well. */
+    GCancellable *origin_cancellable;
+    gulong cancelled_handler_id;
+};
+typedef struct _SetEngineByDescData SetEngineByDescData;
 
 struct _BusInputContext {
     IBusService parent;
@@ -70,14 +88,8 @@ struct _BusInputContext {
     /* is fake context */
     gboolean fake;
 
-    /* set engine by desc result, cancellable */
-    GSimpleAsyncResult *simple;
-    /* a object to cancel bus_engine_proxy_new call */
-    GCancellable *cancellable;
-    /* a object being passed to the bus_input_context_set_engine_by_desc function. if origin_cancellable is cancelled by someone,
-     * we cancel the cancellable above as well. */
-    GCancellable *origin_cancellable;
-    gulong cancelled_handler_id;
+    /* incompleted set engine by desc request */
+    SetEngineByDescData *data;
 };
 
 struct _BusInputContextClass {
@@ -247,6 +259,11 @@ static const gchar introspection_xml[] =
     "    <method name='GetEngine'>"
     "      <arg direction='out' type='v' name='desc' />"
     "    </method>"
+    "    <method name='SetSurroundingText'>"
+    "      <arg direction='in' type='v' name='text' />"
+    "      <arg direction='in' type='u' name='cursor_pos' />"
+    "    </method>"
+
     /* signals */
     "    <signal name='CommitText'>"
     "      <arg type='v' name='text' />"
@@ -557,8 +574,8 @@ bus_input_context_class_init (BusInputContextClass *class)
             G_SIGNAL_RUN_LAST,
             0,
             NULL, NULL,
-            bus_marshal_VOID__STRING,
-            G_TYPE_NONE,
+            bus_marshal_OBJECT__STRING,
+            IBUS_TYPE_ENGINE_DESC,
             1,
             G_TYPE_STRING);
 
@@ -909,6 +926,26 @@ _ic_is_enabled (BusInputContext       *context,
     g_dbus_method_invocation_return_value (invocation, g_variant_new ("(b)", context->enabled));
 }
 
+static void
+_ic_set_engine_done (BusInputContext       *context,
+                     GAsyncResult          *res,
+                     GDBusMethodInvocation *invocation)
+{
+    gboolean retval = FALSE;
+    GError *error = NULL;
+
+    retval = bus_input_context_set_engine_by_desc_finish (context,
+                    res, &error);
+
+    if (!retval) {
+        g_dbus_method_invocation_return_gerror (invocation, error);
+        g_error_free (error);
+    }
+    else {
+        g_dbus_method_invocation_return_value (invocation, NULL);
+    }
+}
+
 /**
  * _ic_set_engine:
  *
@@ -922,16 +959,34 @@ _ic_set_engine (BusInputContext       *context,
     gchar *engine_name = NULL;
     g_variant_get (parameters, "(&s)", &engine_name);
 
-    g_signal_emit (context, context_signals[REQUEST_ENGINE], 0, engine_name);
+    if (!bus_input_context_has_focus (context)) {
+        g_dbus_method_invocation_return_error (invocation,
+                G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
+                "Context which does not has focus can not change engine to %s.",
+                engine_name);
+        return;
+    }
 
-    if (context->engine == NULL) {
-        g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
-                        "Can not find engine '%s'.", engine_name);
+    IBusEngineDesc *desc = NULL;
+    g_signal_emit (context,
+                   context_signals[REQUEST_ENGINE], 0,
+                   engine_name,
+                   &desc);
+    if (desc == NULL) {
+        g_dbus_method_invocation_return_error (invocation,
+                        G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
+                        "Can not find engine %s.", engine_name);
+        return;
     }
-    else {
-        bus_input_context_enable (context);
-        g_dbus_method_invocation_return_value (invocation, NULL);
-    }
+
+    bus_input_context_set_engine_by_desc (context,
+                            desc,
+                            g_gdbus_timeout,
+                            NULL,
+                            (GAsyncReadyCallback)_ic_set_engine_done,
+                            invocation);
+
+    g_object_unref (desc);
 }
 
 /**
@@ -951,7 +1006,7 @@ _ic_get_engine (BusInputContext       *context,
     }
     else {
         g_dbus_method_invocation_return_error (invocation, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
-                        "Input context does have engine.");
+                        "Input context does not have engine.");
     }
 }
 
@@ -960,6 +1015,32 @@ _ic_get_engine (BusInputContext       *context,
  *
  * Handle a D-Bus method call whose destination and interface name are both "org.freedesktop.IBus.InputContext"
  */
+static void
+_ic_set_surrounding_text (BusInputContext       *context,
+                          GVariant              *parameters,
+                          GDBusMethodInvocation *invocation)
+{
+    GVariant *variant = NULL;
+    IBusText *text;
+    guint cursor_pos = 0;
+
+    g_variant_get (parameters, "(vu)", &variant, &cursor_pos);
+    text = IBUS_TEXT (ibus_serializable_deserialize (variant));
+    g_variant_unref (variant);
+
+    if ((context->capabilities & IBUS_CAP_SURROUNDING_TEXT) &&
+         context->has_focus && context->enabled && context->engine) {
+        bus_engine_proxy_set_surrounding_text (context->engine,
+                                               text,
+                                               cursor_pos);
+    }
+
+    if (g_object_is_floating (text))
+        g_object_unref (text);
+
+    g_dbus_method_invocation_return_value (invocation, NULL);
+}
+
 static void
 bus_input_context_service_method_call (IBusService            *service,
                                        GDBusConnection        *connection,
@@ -999,6 +1080,7 @@ bus_input_context_service_method_call (IBusService            *service,
         { "IsEnabled",         _ic_is_enabled },
         { "SetEngine",         _ic_set_engine },
         { "GetEngine",         _ic_get_engine },
+        { "SetSurroundingText", _ic_set_surrounding_text},
     };
 
     gint i;
@@ -1037,7 +1119,21 @@ bus_input_context_focus_in (BusInputContext *context)
 
     if (context->engine == NULL && context->enabled) {
         /* request an engine, e.g. a global engine if the feature is enabled. */
-        g_signal_emit (context, context_signals[REQUEST_ENGINE], 0, NULL);
+        IBusEngineDesc *desc = NULL;
+        g_signal_emit (context,
+                       context_signals[REQUEST_ENGINE], 0,
+                       NULL,
+                       &desc);
+
+        if (desc != NULL) {
+            bus_input_context_set_engine_by_desc (context,
+                            desc,
+                            g_gdbus_timeout, /* timeout in msec. */
+                            NULL, /* we do not cancel the call. */
+                            NULL, /* use the default callback function. */
+                            NULL);
+            g_object_unref (desc);
+        }
     }
 
     if (context->engine && context->enabled) {
@@ -1723,6 +1819,29 @@ _engine_delete_surrounding_text_cb (BusEngineProxy    *engine,
 }
 
 /**
+ * _engine_require_surrounding_text_cb:
+ *
+ * A function to be called when "require-surrounding-text" glib signal is sent to the engine object.
+ */
+static void
+_engine_require_surrounding_text_cb (BusEngineProxy    *engine,
+                                     BusInputContext   *context)
+{
+    g_assert (BUS_IS_ENGINE_PROXY (engine));
+    g_assert (BUS_IS_INPUT_CONTEXT (context));
+
+    g_assert (context->engine == engine);
+
+    if (!context->enabled)
+        return;
+
+    bus_input_context_emit_signal (context,
+                                   "RequireSurroundingText",
+                                   NULL,
+                                   NULL);
+}
+
+/**
  * _engine_update_preedit_text_cb:
  *
  * A function to be called when "update-preedit-text" glib signal is sent to the engine object.
@@ -1893,7 +2012,7 @@ bus_input_context_new (BusConnection    *connection,
     context->client = g_strdup (client);
 
     /* it is a fake input context, just need process hotkey */
-    context->fake = (g_strcmp0 (client, "fake") == 0);
+    context->fake = (strncmp (client, "fake", 4) == 0);
 
     if (connection) {
         g_object_ref_sink (connection);
@@ -1919,7 +2038,20 @@ bus_input_context_enable (BusInputContext *context)
     }
 
     if (context->engine == NULL) {
-        g_signal_emit (context, context_signals[REQUEST_ENGINE], 0, NULL);
+        IBusEngineDesc *desc = NULL;
+        g_signal_emit (context,
+                       context_signals[REQUEST_ENGINE], 0,
+                       NULL,
+                       &desc);
+        if (desc != NULL) {
+            bus_input_context_set_engine_by_desc (context,
+                            desc,
+                            g_gdbus_timeout, /* timeout in msec. */
+                            NULL, /* we do not cancel the call. */
+                            NULL, /* use the default callback function. */
+                            NULL);
+            g_object_unref (desc);
+        }
     }
 
     if (context->engine == NULL)
@@ -1983,6 +2115,7 @@ const static struct {
     { "commit-text",              G_CALLBACK (_engine_commit_text_cb) },
     { "forward-key-event",        G_CALLBACK (_engine_forward_key_event_cb) },
     { "delete-surrounding-text",  G_CALLBACK (_engine_delete_surrounding_text_cb) },
+    { "require-surrounding-text", G_CALLBACK (_engine_require_surrounding_text_cb) },
     { "update-preedit-text",      G_CALLBACK (_engine_update_preedit_text_cb) },
     { "show-preedit-text",        G_CALLBACK (_engine_show_preedit_text_cb) },
     { "hide-preedit-text",        G_CALLBACK (_engine_hide_preedit_text_cb) },
@@ -2064,54 +2197,113 @@ bus_input_context_set_engine (BusInputContext *context,
                    0);
 }
 
+static void set_engine_by_desc_data_free (SetEngineByDescData *data)
+{
+    if (data->context != NULL) {
+        if (data->context->data == data)
+            data->context->data = NULL;
+        g_object_unref (data->context);
+    }
+
+    if (data->simple != NULL) {
+        g_object_unref (data->simple);
+    }
+
+    if (data->cancellable != NULL)
+        g_object_unref (data->cancellable);
+
+    if (data->origin_cancellable != NULL) {
+        if (data->cancelled_handler_id != 0)
+            g_cancellable_disconnect (data->origin_cancellable,
+                data->cancelled_handler_id);
+        g_object_unref (data->origin_cancellable);
+    }
+
+    g_slice_free (SetEngineByDescData, data);
+}
+
 /**
  * new_engine_cb:
  *
  * A callback function to be called when bus_engine_proxy_new() is finished.
  */
 static void
-new_engine_cb (GObject         *obj,
-               GAsyncResult    *res,
-               BusInputContext *context)
+new_engine_cb (GObject             *obj,
+               GAsyncResult        *res,
+               SetEngineByDescData *data)
 {
     GError *error = NULL;
-
     BusEngineProxy *engine = bus_engine_proxy_new_finish (res, &error);
 
     if (engine == NULL) {
-        g_simple_async_result_set_from_error (context->simple, error);
+        g_simple_async_result_set_from_error (data->simple, error);
         g_error_free (error);
     }
     else {
-        bus_input_context_set_engine (context, engine);
-        bus_input_context_enable (context);
-        g_simple_async_result_set_op_res_gboolean (context->simple, TRUE);
+        if (data->context->data != data) {
+            /* Request has been overriden or cancelled */
+            g_object_unref (engine);
+            g_simple_async_result_set_error (data->simple,
+                                             G_IO_ERROR,
+                                             G_IO_ERROR_CANCELLED,
+                                             "Opertation was cancelled");
+        }
+        else {
+            bus_input_context_set_engine (data->context, engine);
+            bus_input_context_enable (data->context);
+            g_simple_async_result_set_op_res_gboolean (data->simple, TRUE);
+        }
     }
 
     /* Call the callback function for bus_input_context_set_engine_by_desc(). */
-    g_simple_async_result_complete (context->simple);
+    g_simple_async_result_complete_in_idle (data->simple);
+
+    set_engine_by_desc_data_free (data);
 }
 
-/**
- * new_engine_cancelled_cb:
- *
- * A function to be called when someone called g_cancellable_cancel() for the context->origin_cancellable object.
- * Cancel the outstanding bus_engine_proxy_new call (if any.)
- */
 static void
-new_engine_cancelled_cb (GCancellable    *cancellable,
-                         BusInputContext *context)
+cancel_set_engine_by_desc (SetEngineByDescData *data)
 {
-    g_cancellable_disconnect (cancellable, context->cancelled_handler_id);
-    context->cancelled_handler_id = 0;
-    if (context->cancellable)
-        g_cancellable_cancel (context->cancellable);
+    if (data->context->data == data)
+        data->context->data = NULL;
+
+    if (data->origin_cancellable != NULL) {
+        if (data->cancelled_handler_id != 0) {
+            g_cancellable_disconnect (data->origin_cancellable,
+                                      data->cancelled_handler_id);
+            data->cancelled_handler_id = 0;
+        }
+
+        g_object_unref (data->origin_cancellable);
+        data->origin_cancellable = NULL;
+    }
+
+    if (data->cancellable != NULL) {
+        g_cancellable_cancel (data->cancellable);
+        g_object_unref (data->cancellable);
+        data->cancellable = NULL;
+    }
+}
+
+static gboolean
+set_engine_by_desc_cancelled_idle_cb (SetEngineByDescData *data)
+{
+    cancel_set_engine_by_desc (data);
+    return FALSE;
+}
+
+static void
+set_engine_by_desc_cancelled_cb (GCancellable        *cancellable,
+                                 SetEngineByDescData *data)
+{
+    /* Cancel in idle to avoid deadlock */
+    g_idle_add ((GSourceFunc) set_engine_by_desc_cancelled_idle_cb, data);
 }
 
 /**
  * set_engine_by_desc_ready_cb:
  *
- * A default callback function for bus_input_context_set_engine_by_desc(), which is called by new_engine_cb().
+ * A default callback function for bus_input_context_set_engine_by_desc().
  */
 static void
 set_engine_by_desc_ready_cb (BusInputContext *context,
@@ -2120,7 +2312,7 @@ set_engine_by_desc_ready_cb (BusInputContext *context,
 {
     GError *error = NULL;
     if (!bus_input_context_set_engine_by_desc_finish (context, res, &error)) {
-        g_warning ("%s", error->message);
+        g_warning ("Set context engine failed: %s", error->message);
         g_error_free (error);
     }
 }
@@ -2137,48 +2329,57 @@ bus_input_context_set_engine_by_desc (BusInputContext    *context,
     g_assert (IBUS_IS_ENGINE_DESC (desc));
     g_assert (cancellable == NULL || G_IS_CANCELLABLE (cancellable));
 
-    if (context->simple != NULL) {
-        /* We need cancel previous set engine request */
-        g_cancellable_cancel (context->cancellable);
-        g_simple_async_result_set_error (context->simple,
-                                         G_DBUS_ERROR,
-                                         G_DBUS_ERROR_FAILED,
-                                         "Set engine request is overrided.");
-        g_simple_async_result_complete (context->simple);
+    if (context->data != NULL) {
+        /* Cancel previous set_engine_by_desc() request */
+        cancel_set_engine_by_desc (context->data);
     }
 
-    g_assert (context->simple == NULL);
-    g_assert (context->cancellable == NULL);
-    g_assert (context->origin_cancellable == NULL);
-    g_assert (context->cancelled_handler_id == 0);
+    /* Previous request must be completed or cancelled */
+    g_assert (context->data == NULL);
 
     if (callback == NULL)
         callback = (GAsyncReadyCallback) set_engine_by_desc_ready_cb;
 
-    context->simple =
+    GSimpleAsyncResult *simple =
             g_simple_async_result_new ((GObject *) context,
                                        callback,
                                        user_data,
                                        bus_input_context_set_engine_by_desc);
-    g_object_ref (context->simple);
-    context->cancellable = g_cancellable_new ();
 
-    if (cancellable) {
-        context->origin_cancellable = (GCancellable *) g_object_ref (cancellable);
-        context->cancelled_handler_id =
-                g_cancellable_connect (context->origin_cancellable,
-                                       (GCallback) new_engine_cancelled_cb,
-                                       context,
+    if (g_cancellable_is_cancelled (cancellable)) {
+        g_simple_async_result_set_error (simple,
+                                         G_IO_ERROR,
+                                         G_IO_ERROR_CANCELLED,
+                                         "Operation was cancelled");
+        g_simple_async_result_complete_in_idle (simple);
+        g_object_unref (simple);
+        return;
+    }
+
+    SetEngineByDescData *data = g_slice_new0 (SetEngineByDescData);
+    context->data = data;
+    data->context = context;
+    g_object_ref (context);
+    data->simple = simple;
+
+    if (cancellable != NULL) {
+        data->origin_cancellable = cancellable;
+        g_object_ref (cancellable);
+        data->cancelled_handler_id =
+                g_cancellable_connect (data->origin_cancellable,
+                                       (GCallback) set_engine_by_desc_cancelled_cb,
+                                       data,
                                        NULL);
     }
 
-    /* We can cancel the bus_engine_proxy_new call by calling g_cancellable_cancel() for context->cancellable;
-     * See the first part of this function and new_engine_cancelled_cb(). */
+    data->cancellable = g_cancellable_new ();
+    /* We can cancel the bus_engine_proxy_new() call by data->cancellable;
+     * See cancel_set_engine_by_desc() and set_engine_by_desc_cancelled_cb(). */
     bus_engine_proxy_new (desc,
                           timeout,
-                          context->cancellable,
+                          data->cancellable,
                           (GAsyncReadyCallback) new_engine_cb,
-                          context);
+                          data);
 }
 
 gboolean
@@ -2189,26 +2390,12 @@ bus_input_context_set_engine_by_desc_finish (BusInputContext  *context,
     GSimpleAsyncResult *simple = G_SIMPLE_ASYNC_RESULT (res);
 
     g_assert (BUS_IS_INPUT_CONTEXT (context));
-    g_assert (g_simple_async_result_get_source_tag (simple) == bus_input_context_set_engine_by_desc);
-    g_assert (context->simple == simple);
+    g_assert (g_simple_async_result_get_source_tag (simple) ==
+                bus_input_context_set_engine_by_desc);
 
-    gboolean retval = FALSE;
-    if (!g_simple_async_result_propagate_error (simple, error))
-        retval = TRUE;
-
-    /* release async call related resources */
-    g_object_unref (context->simple);
-    context->simple = NULL;
-    g_object_unref (context->cancellable);
-    context->cancellable = NULL;
-    if (context->cancelled_handler_id) {
-        g_cancellable_disconnect (context->origin_cancellable, context->cancelled_handler_id);
-        context->cancelled_handler_id = 0;
-        g_object_unref (context->origin_cancellable);
-        context->origin_cancellable = NULL;
-    }
-
-    return retval;
+    if (g_simple_async_result_propagate_error (simple, error))
+        return FALSE;
+    return TRUE;
 }
 
 BusEngineProxy *
@@ -2246,17 +2433,6 @@ bus_input_context_filter_keyboard_shortcuts (BusInputContext    *context,
         else {
             /* stop filter release key event */
             context->filter_release = FALSE;
-        }
-    }
-
-    if (keycode != 0 && bus_ibus_impl_is_use_sys_layout (BUS_DEFAULT_IBUS) == FALSE) {
-        IBusKeymap *keymap = BUS_DEFAULT_KEYMAP;
-        if (keymap != NULL) {
-            guint tmp = ibus_keymap_lookup_keysym (keymap,
-                                                   keycode,
-                                                   modifiers);
-            if (tmp != IBUS_VoidSymbol)
-                keyval = tmp;
         }
     }
 
@@ -2311,4 +2487,12 @@ bus_input_context_set_capabilities (BusInputContext    *context,
     }
 
     context->capabilities = capabilities;
+}
+
+
+const gchar *
+bus_input_context_get_client (BusInputContext *context)
+{
+    g_assert (BUS_IS_INPUT_CONTEXT (context));
+    return context->client;
 }

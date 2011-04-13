@@ -28,6 +28,9 @@
 #include "ibuslookuptable.h"
 #include "ibusproplist.h"
 
+#define IBUS_INPUT_CONTEXT_GET_PRIVATE(o)  \
+   (G_TYPE_INSTANCE_GET_PRIVATE ((o), IBUS_TYPE_INPUT_CONTEXT, IBusInputContextPrivate))
+
 enum {
     ENABLED,
     DISABLED,
@@ -52,9 +55,25 @@ enum {
     LAST_SIGNAL,
 };
 
+/* IBusInputContextPrivate */
+struct _IBusInputContextPrivate {
+    /* TRUE if the current engine needs surrounding text; FALSE otherwise */
+    gboolean  needs_surrounding_text;
+
+    /* cached surrounding text (see also IBusEnginePrivate and
+       BusEngineProxy) */
+    IBusText *surrounding_text;
+    guint     surrounding_cursor_pos;
+};
+
+typedef struct _IBusInputContextPrivate IBusInputContextPrivate;
+
 static guint            context_signals[LAST_SIGNAL] = { 0 };
 
+static IBusText *text_empty = NULL;
+
 /* functions prototype */
+static void     ibus_input_context_real_destroy (IBusProxy              *context);
 static void     ibus_input_context_g_signal     (GDBusProxy             *proxy,
                                                  const gchar            *sender_name,
                                                  const gchar            *signal_name,
@@ -65,7 +84,12 @@ G_DEFINE_TYPE (IBusInputContext, ibus_input_context, IBUS_TYPE_PROXY)
 static void
 ibus_input_context_class_init (IBusInputContextClass *class)
 {
+    IBusProxyClass *ibus_proxy_class = IBUS_PROXY_CLASS (class);
     GDBusProxyClass *g_dbus_proxy_class = G_DBUS_PROXY_CLASS (class);
+
+    g_type_class_add_private (class, sizeof (IBusInputContextPrivate));
+
+    ibus_proxy_class->destroy = ibus_input_context_real_destroy;
 
     g_dbus_proxy_class->g_signal = ibus_input_context_g_signal;
 
@@ -429,11 +453,33 @@ ibus_input_context_class_init (IBusInputContextClass *class)
             G_TYPE_NONE,
             1,
             IBUS_TYPE_PROPERTY);
+
+    text_empty = ibus_text_new_from_static_string ("");
+    g_object_ref_sink (text_empty);
 }
 
 static void
 ibus_input_context_init (IBusInputContext *context)
 {
+    IBusInputContextPrivate *priv;
+
+    priv = IBUS_INPUT_CONTEXT_GET_PRIVATE (context);
+    priv->surrounding_text = g_object_ref_sink (text_empty);
+    priv->surrounding_cursor_pos = 0;
+}
+
+static void
+ibus_input_context_real_destroy (IBusProxy *context)
+{
+    IBusInputContextPrivate *priv;
+    priv = IBUS_INPUT_CONTEXT_GET_PRIVATE (IBUS_INPUT_CONTEXT (context));
+
+    if (priv->surrounding_text) {
+        g_object_unref (priv->surrounding_text);
+        priv->surrounding_text = NULL;
+    }
+
+    IBUS_PROXY_CLASS(ibus_input_context_parent_class)->destroy (context);
 }
 
 static void
@@ -451,8 +497,6 @@ ibus_input_context_g_signal (GDBusProxy  *proxy,
         const gchar *signal_name;
         guint signal_id;
     } signals [] = {
-        { "Enabled",                ENABLED                  },
-        { "Disabled",               DISABLED                 },
         { "ShowPreeditText",        SHOW_PREEDIT_TEXT        },
         { "HidePreeditText",        HIDE_PREEDIT_TEXT        },
         { "ShowAuxiliaryText",      SHOW_AUXILIARY_TEXT      },
@@ -605,39 +649,28 @@ ibus_input_context_g_signal (GDBusProxy  *proxy,
         return;
     }
 
+    IBusInputContextPrivate *priv;
+    priv = IBUS_INPUT_CONTEXT_GET_PRIVATE (IBUS_INPUT_CONTEXT (context));
+
+    if (g_strcmp0 (signal_name, "Enabled") == 0) {
+        priv->needs_surrounding_text = FALSE;
+        g_signal_emit (context, context_signals[ENABLED], 0);
+        return;
+    }
+
+    if (g_strcmp0 (signal_name, "Disabled") == 0) {
+        priv->needs_surrounding_text = FALSE;
+        g_signal_emit (context, context_signals[DISABLED], 0);
+        return;
+    }
+
+    if (g_strcmp0 (signal_name, "RequireSurroundingText") == 0) {
+        priv->needs_surrounding_text = TRUE;
+        return;
+    }
+
     G_DBUS_PROXY_CLASS (ibus_input_context_parent_class)->g_signal (
                                 proxy, sender_name, signal_name, parameters);
-}
-
-static void
-ibus_input_context_process_key_event_cb (IBusInputContext   *context,
-                                         GAsyncResult       *res,
-                                         guint              *data)
-{
-    GError *error = NULL;
-    GVariant *variant = g_dbus_proxy_call_finish ((GDBusProxy *) context, res, &error);
-
-    gboolean retval = FALSE;
-    if (variant == NULL) {
-        g_warning ("%s.ProcessKeyEvent: %s", IBUS_INTERFACE_INPUT_CONTEXT, error->message);
-        g_error_free (error);
-    }
-    else {
-        g_variant_get (variant, "(b)", &retval);
-        g_variant_unref (variant);
-    }
-
-    if (!retval) {
-        /* Forward key event back with IBUS_FORWARD_MASK. And process_key_event will
-         * not process key event with IBUS_FORWARD_MASK again. */
-        g_signal_emit (context,
-                       context_signals[FORWARD_KEY_EVENT],
-                       0,
-                       data[0],
-                       data[1],
-                       data[2] | IBUS_FORWARD_MASK);
-    }
-    g_slice_free1 (sizeof (guint[3]), data);
 }
 
 IBusInputContext *
@@ -651,12 +684,15 @@ ibus_input_context_new (const gchar     *path,
 
     GInitable *initable;
 
+    GDBusProxyFlags flags = G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START |
+                            G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES;
+
     initable = g_initable_new (IBUS_TYPE_INPUT_CONTEXT,
                                cancellable,
                                error,
                                "g-connection",      connection,
-                               "g-name",            "org.freedesktop.IBus",
-                               "g-flags",           G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START | G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES,
+                               "g-name",            IBUS_SERVICE_IBUS,
+                               "g-flags",           flags,
                                "g-interface-name",  IBUS_INTERFACE_INPUT_CONTEXT,
                                "g-object-path",     path,
                                "g-default-timeout", ibus_get_timeout (),
@@ -666,16 +702,67 @@ ibus_input_context_new (const gchar     *path,
     return NULL;
 }
 
-IBusInputContext *
-ibus_input_context_get_input_context (const gchar        *path,
-                                      GDBusConnection     *connection)
+void
+ibus_input_context_new_async (const gchar         *path,
+                              GDBusConnection     *connection,
+                              GCancellable        *cancellable,
+                              GAsyncReadyCallback  callback,
+                              gpointer             user_data)
 {
-    IBusInputContext *context;
+    g_assert (path != NULL);
+    g_assert (G_IS_DBUS_CONNECTION (connection));
+    g_assert (callback != NULL);
+
+    GDBusProxyFlags flags = G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START |
+                            G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES;
+    
+    g_async_initable_new_async (IBUS_TYPE_INPUT_CONTEXT,
+                                G_PRIORITY_DEFAULT,
+                                cancellable,
+                                callback,
+                                user_data,
+                                "g-connection",      connection,
+                                "g-name",            IBUS_SERVICE_IBUS,
+                                "g-flags",           flags,
+                                "g-interface-name",  IBUS_INTERFACE_INPUT_CONTEXT,
+                                "g-object-path",     path,
+                                "g-default-timeout", ibus_get_timeout (),
+                                NULL);
+}
+
+IBusInputContext *
+ibus_input_context_new_async_finish (GAsyncResult  *res,
+                                     GError       **error)
+{
+    GObject *object = NULL;
+    GObject *source_object = NULL;
+
+    source_object = g_async_result_get_source_object (res);
+    g_assert (source_object != NULL);
+
+    object = g_async_initable_new_finish (G_ASYNC_INITABLE (source_object),
+                                          res,
+                                          error);
+    g_object_unref (source_object);
+
+    if (object != NULL) {
+        return IBUS_INPUT_CONTEXT (object);
+    }
+    else {
+        return NULL;
+    }
+}
+
+IBusInputContext *
+ibus_input_context_get_input_context (const gchar     *path,
+                                      GDBusConnection *connection)
+{
+    IBusInputContext *context = NULL;
     GError *error = NULL;
 
     context = ibus_input_context_new (path, connection, NULL, &error);
-    if (!context) {
-        g_warning ("%s", error->message);
+    if (context == NULL) {
+        g_warning ("ibus_input_context_get_input_context: %s", error->message);
         g_error_free (error);
         return NULL;
     }
@@ -686,6 +773,87 @@ ibus_input_context_get_input_context (const gchar        *path,
     return context;
 }
 
+void
+ibus_input_context_get_input_context_async (const gchar         *path,
+                                            GDBusConnection     *connection,
+                                            GCancellable        *cancellable,
+                                            GAsyncReadyCallback  callback,
+                                            gpointer             user_data)
+{
+    ibus_input_context_new_async (path,
+                                  connection,
+                                  cancellable,
+                                  callback,
+                                  user_data);
+}
+
+IBusInputContext *
+ibus_input_context_get_input_context_async_finish (GAsyncResult  *res,
+                                                   GError       **error)
+{
+    IBusInputContext *context = NULL;
+
+    context = ibus_input_context_new_async_finish (res, error);
+    if (context == NULL) {
+        return NULL;
+    }
+
+    /* Do not call "org.freedesktop.IBus.Service.Destroy" when the input
+     * context object is disposed. */
+    IBUS_PROXY (context)->own = FALSE;
+    return context;
+}
+
+void
+ibus_input_context_process_key_event_async (IBusInputContext   *context,
+                                            guint32             keyval,
+                                            guint32             keycode,
+                                            guint32             state,
+                                            gint                timeout_msec,
+                                            GCancellable       *cancellable,
+                                            GAsyncReadyCallback callback,
+                                            gpointer            user_data)
+{
+    g_assert (IBUS_IS_INPUT_CONTEXT (context));
+
+    g_dbus_proxy_call ((GDBusProxy *) context,
+                       "ProcessKeyEvent",                   /* method_name */
+                       g_variant_new ("(uuu)",
+                            keyval, keycode, state),        /* parameters */
+                       G_DBUS_CALL_FLAGS_NONE,              /* flags */
+                       timeout_msec,                        /* timeout */
+                       cancellable,                         /* cancellable */
+                       callback,                            /* callback */
+                       user_data                            /* user_data */
+                       );
+
+}
+
+gboolean
+ibus_input_context_process_key_event_async_finish (IBusInputContext  *context,
+                                                   GAsyncResult      *res,
+                                                   gboolean          *processed,
+                                                   GError           **error)
+{
+    g_assert (IBUS_IS_INPUT_CONTEXT (context));
+    g_assert (G_IS_ASYNC_RESULT (res));
+    g_assert (processed != NULL);
+    g_assert (error == NULL || *error == NULL);
+
+    GVariant *variant = g_dbus_proxy_call_finish ((GDBusProxy *) context,
+                                                   res, error);
+    if (variant == NULL) {
+        *processed = FALSE;
+        return FALSE;
+    }
+    else {
+        *processed = FALSE;
+        g_variant_get (variant, "(b)", processed);
+        g_variant_unref (variant);
+        return TRUE;
+    }
+}
+
 gboolean
 ibus_input_context_process_key_event (IBusInputContext *context,
                                       guint32           keyval,
@@ -694,29 +862,24 @@ ibus_input_context_process_key_event (IBusInputContext *context,
 {
     g_assert (IBUS_IS_INPUT_CONTEXT (context));
 
-    if (state & IBUS_HANDLED_MASK)
-        return TRUE;
+    GVariant *result = g_dbus_proxy_call_sync ((GDBusProxy *) context,
+                            "ProcessKeyEvent",              /* method_name */
+                            g_variant_new ("(uuu)",
+                                 keyval, keycode, state),   /* parameters */
+                            G_DBUS_CALL_FLAGS_NONE,         /* flags */
+                            -1,                             /* timeout */
+                            NULL,                           /* cancellable */
+                            NULL);
 
-    if (state & IBUS_IGNORED_MASK)
-        return FALSE;
+    if (result != NULL) {
+        gboolean processed = FALSE;
 
-    guint *data = g_slice_alloc (sizeof (guint[3]));
-    data[0] = keyval;
-    data[1] = keycode;
-    data[2] = state;
-    g_dbus_proxy_call ((GDBusProxy *) context,
-                       "ProcessKeyEvent",                   /* method_name */
-                       g_variant_new ("(uuu)",
-                            keyval, keycode, state),        /* parameters */
-                       G_DBUS_CALL_FLAGS_NONE,              /* flags */
-                       -1,                                  /* timeout */
-                       NULL,                                /* cancellable */
-                       (GAsyncReadyCallback) ibus_input_context_process_key_event_cb,
-                                                            /* callback */
-                       data                                 /* user_data */
-                       );
+        g_variant_get (result, "(b)", &processed);
+        g_variant_unref (result);
+        return processed;
+    }
 
-    return TRUE;
+    return FALSE;
 }
 
 void
@@ -805,6 +968,85 @@ ibus_input_context_property_hide (IBusInputContext *context,
                        );
 }
 
+void
+ibus_input_context_is_enabled_async (IBusInputContext   *context,
+                                     gint                timeout_msec,
+                                     GCancellable       *cancellable,
+                                     GAsyncReadyCallback callback,
+                                     gpointer            user_data)
+{
+    g_assert (IBUS_IS_INPUT_CONTEXT (context));
+    g_dbus_proxy_call ((GDBusProxy *) context,
+                       "IsEnabled",               /* method_name */
+                       NULL,                      /* parameters */
+                       G_DBUS_CALL_FLAGS_NONE,    /* flags */
+                       timeout_msec,
+                       cancellable,
+                       callback,
+                       user_data);
+}
+
+gboolean
+ibus_input_context_is_enabled_async_finish (IBusInputContext   *context,
+                                            GAsyncResult       *res,
+                                            gboolean           *retval,
+                                            GError            **error)
+{
+    g_assert (IBUS_IS_INPUT_CONTEXT (context));
+    g_assert (G_IS_ASYNC_RESULT (res));
+    g_assert (retval != NULL);
+    g_assert (error == NULL || *error == NULL);
+
+    GVariant *variant = g_dbus_proxy_call_finish ((GDBusProxy *) context,
+                                                   res, error);
+    if (variant == NULL) {
+        return FALSE;
+    }
+    g_variant_get (variant, "(b)", retval);
+    g_variant_unref (variant);
+    return TRUE;
+}
+
+void
+ibus_input_context_set_surrounding_text (IBusInputContext   *context,
+                                         IBusText           *text,
+                                         guint32             cursor_pos)
+{
+    g_assert (IBUS_IS_INPUT_CONTEXT (context));
+    g_assert (IBUS_IS_TEXT (text));
+
+    IBusInputContextPrivate *priv;
+    priv = IBUS_INPUT_CONTEXT_GET_PRIVATE (context);
+
+    if (priv->surrounding_text == NULL ||
+        g_strcmp0 (text->text, priv->surrounding_text->text) != 0 ||
+        cursor_pos != priv->surrounding_cursor_pos) {
+        GVariant *variant = ibus_serializable_serialize ((IBusSerializable *)text);
+        if (priv->surrounding_text)
+            g_object_unref (priv->surrounding_text);
+        priv->surrounding_text = (IBusText *) g_object_ref_sink (text);
+        priv->surrounding_cursor_pos = cursor_pos;
+
+        g_dbus_proxy_call ((GDBusProxy *) context,
+                         "SetSurroundingText",              /* method_name */
+                         g_variant_new ("(vu)", variant, cursor_pos), /* parameters */
+                         G_DBUS_CALL_FLAGS_NONE,            /* flags */
+                         -1,                                /* timeout */
+                         NULL,                              /* cancellable */
+                         NULL,                              /* callback */
+                         NULL                               /* user_data */
+                         );
+    }
+}
+
+gboolean
+ibus_input_context_needs_surrounding_text (IBusInputContext *context)
+{
+    IBusInputContextPrivate *priv;
+    priv = IBUS_INPUT_CONTEXT_GET_PRIVATE (IBUS_INPUT_CONTEXT (context));
+    return priv->needs_surrounding_text;
+}
+
 gboolean
 ibus_input_context_is_enabled (IBusInputContext *context)
 {
@@ -833,6 +1075,47 @@ ibus_input_context_is_enabled (IBusInputContext *context)
     return retval;
 }
 
+void
+ibus_input_context_get_engine_async (IBusInputContext   *context,
+                                     gint                timeout_msec,
+                                     GCancellable       *cancellable,
+                                     GAsyncReadyCallback callback,
+                                     gpointer            user_data)
+{
+    g_assert (IBUS_IS_INPUT_CONTEXT (context));
+    g_dbus_proxy_call ((GDBusProxy *) context,
+                       "GetEngine",               /* method_name */
+                       NULL,                      /* parameters */
+                       G_DBUS_CALL_FLAGS_NONE,    /* flags */
+                       timeout_msec,
+                       cancellable,
+                       callback,
+                       user_data);
+}
+
+IBusEngineDesc *
+ibus_input_context_get_engine_async_finish (IBusInputContext   *context,
+                                            GAsyncResult       *res,
+                                            GError            **error)
+{
+    g_assert (IBUS_IS_INPUT_CONTEXT (context));
+    g_assert (G_IS_ASYNC_RESULT (res));
+    g_assert (error == NULL || *error == NULL);
+
+    GVariant *variant = g_dbus_proxy_call_finish ((GDBusProxy *) context,
+                                                   res, error);
+    if (variant == NULL) {
+        return NULL;
+    }
+
+    GVariant *engine_desc_variant = g_variant_get_child_value (variant, 0);
+    IBusEngineDesc *desc = IBUS_ENGINE_DESC (ibus_serializable_deserialize (engine_desc_variant));
+    g_variant_unref (engine_desc_variant);
+    g_variant_unref (variant);
+
+    return desc;
+}
+
 IBusEngineDesc *
 ibus_input_context_get_engine (IBusInputContext *context)
 {
@@ -854,9 +1137,9 @@ ibus_input_context_get_engine (IBusInputContext *context)
         return NULL;
     }
 
-    GVariant *variant = g_variant_get_child_value (result, 0);
-    IBusEngineDesc *desc = IBUS_ENGINE_DESC (ibus_serializable_deserialize (variant));
-    g_variant_unref (variant);
+    GVariant *engine_desc_variant = g_variant_get_child_value (result, 0);
+    IBusEngineDesc *desc = IBUS_ENGINE_DESC (ibus_serializable_deserialize (engine_desc_variant));
+    g_variant_unref (engine_desc_variant);
     g_variant_unref (result);
 
     return desc;
